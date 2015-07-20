@@ -29,8 +29,9 @@
 -define(SERVER, ?MODULE).
 
 -record(state, {
+    op_log_file,
     op_index,
-    server_id
+    server_id   =   <<"default_server">>
 }).
 
 %%%===================================================================
@@ -79,32 +80,27 @@ log_command(Command) ->
     {ok, State :: #state{}} |
     {ok, State :: #state{}, hibernate} |
     {error, Reason :: term()}).
+
 -define(DEFAULT_LOG_IDX_FILE, "priv/op_log.idx").
--define(DEFAULT_START_OP_INDEX, 0).
+-define(DEFAULT_START_OP_LOG_FILE_INDEX, 0).
 -define(DEFAULT_SERVER_ID, "server1").
+-define(DEFAULT_OP_COUNT_PER_LOG_FILE, 1000000).
+
+-define(DEFAULT_OP_LOG_FILE_NAME, "priv/op_log.log").
+-define(OP_LOG_SEP, <<"\\">>).
+-define(DEFAULT_OP_LOG_START_INDEX, 0).
+
 init([]) ->
     %% get start op log index from file
-    StartOpIndex =
-        case file:read_file(?DEFAULT_LOG_IDX_FILE) of
-            {ok, File} ->
-                try
-                    erlang:binary_to_integer(File)
-                catch E:T ->
-                    lager:error("binary to integer [~p] failed of [~p:~p]", [File, E, T]),
-                    ?DEFAULT_START_OP_INDEX
-                end;
-            {error, enoent} ->
-                lager:info("no op log idx file found, deault to index 0", []),
-                ?DEFAULT_START_OP_INDEX;
-            Error ->
-                lager:info("read log idx file failed with error [~p]", [Error]),
-                ?DEFAULT_START_OP_INDEX
-        end,
+    StartOpIndex = get_last_op_log_index(?DEFAULT_OP_LOG_FILE_NAME),
 
     %% get server id
     ServerId = ?DEFAULT_SERVER_ID,
 
-    {ok, #state{op_index = StartOpIndex, server_id = ServerId}}.
+    %% open log file to write op in
+    OpLogFile = open_op_log_file(?DEFAULT_OP_LOG_FILE_NAME),
+
+    {ok, #state{op_index = StartOpIndex, op_log_file = OpLogFile, server_id = ServerId}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -122,9 +118,9 @@ init([]) ->
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
 
-handle_event({oplog, Command#edis_command{}}, State#state{op_index = OpIndex}) ->
+handle_event({oplog, Command#edis_command{}}, State#state{op_log_file = OpLogFile, op_index = OpIndex}) ->
     BinOpLog = format_command_to_op_log(OpIndex, Command),
-    write_bin_log_to_file(BinOpLog),
+    write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
     {ok, State};
 
 handle_event(_Event, State) ->
@@ -180,7 +176,8 @@ handle_info(_Info, State) ->
 -spec(terminate(Args :: (term() | {stop, Reason :: term()} | stop |
 remove_handler | {error, {'EXIT', Reason :: term()}} |
 {error, term()}), State :: term()) -> term()).
-terminate(_Arg, _State) ->
+terminate(_Arg, _State#state{op_log_file = OpLogFile}) ->
+    close_op_log_file(OpLogFile),
     ok.
 
 %%--------------------------------------------------------------------
@@ -200,7 +197,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
--define(OP_LOG_SEP, <<"\\">>).
 format_command_to_op_log(OpIndex, Command#edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args}) ->
     iolist_to_binary([make_sure_binay(OpIndex),
         ?OP_LOG_SEP, TimeStamp,
@@ -219,4 +215,94 @@ make_sure_binay(Data) ->
             atom_to_binary(Data, latin1);
         true ->
             Data
+    end.
+
+open_op_log_file(FileName) ->
+    case file:open(FileName, [raw, write, append, binary]) of
+        {ok, File} -> File;
+        Error ->
+            lager:error("open op log file [~p] failed [~P]", [FileName, Error]),
+            none
+    end.
+
+write_bin_log_to_op_log_file(File, BinLog) ->
+    case File of
+        none -> lager:info("no op log file to write op [~p]", [BinLog]);
+        _ -> file:write(File, BinLog)
+    end.
+
+close_op_log_file(File) ->
+    file:close(File).
+
+get_last_op_log_index(FileName) ->
+%    OpLogFileIndex =
+%        case file:read_file(?DEFAULT_LOG_IDX_FILE) of
+%            {ok, File} ->
+%                try
+%                    erlang:binary_to_integer(File)
+%                catch E:T ->
+%                    lager:error("binary to integer [~p] failed of [~p:~p]", [File, E, T]),
+%                    ?DEFAULT_START_OP_LOG_FILE_INDEX
+%                end;
+%            {error, enoent} ->
+%                lager:info("no op log idx file found, deault to index 0", []),
+%                ?DEFAULT_START_OP_LOG_FILE_INDEX;
+%            Error ->
+%                lager:info("read log idx file failed with error [~p]", [Error]),
+%                ?DEFAULT_START_OP_LOG_FILE_INDEX
+%        end,
+
+    %% read to get current op log index first
+    case file:open(FileName, [raw, read, binary]) of
+        {ok, File} ->
+            LastLine = read_last_line(File),
+            file:close(File),
+            case LastLine of
+                {ok, BinLastLine} ->
+                    lager:debug("get last line from current log succ: [~p]", [LastLine]),
+                    split_index_from_op_log_line(BinLastLine);
+                Error ->
+                    lager:error("try to read last log op line failed [~p]", [Error]),
+                    ?DEFAULT_OP_LOG_START_INDEX
+            end;
+        {error, enoent} ->
+            lager:info("no op log idx file found, deault to index 0", []),
+            ?DEFAULT_OP_LOG_START_INDEX;
+        Error ->
+            lager:info("read log idx file failed with error [~p]", [Error]),
+            ?DEFAULT_OP_LOG_START_INDEX
+    end.
+
+split_index_from_op_log_line(BinLastLine) ->
+    case binary:split(BinLastLine, ?OP_LOG_SEP) of
+        [BinIndex, _Rest] ->
+            try
+                LastOpIndex = erlang:binary_to_integer(BinIndex),
+                LastOpIndex + 1
+            catch E:T ->
+                lager:error("index binary_to_integer [~p] failed [~p:~p]", [BinIndex, E, T]),
+                ?DEFAULT_OP_LOG_START_INDEX
+            end;
+        _ ->
+            lager:info("get an illegal op log line [~p], set to default index", [BinLastLine]),
+            ?DEFAULT_OP_LOG_START_INDEX
+    end.
+
+-spec(read_last_line(fd()) -> {ok, binary()} | {error, atom()}).  %% just as file:read_line
+read_last_line(File) ->
+    read_last_line(File, 2).
+
+read_last_line(File, Number) ->
+    case file:pread(File, {eof, -Number}, Number) of
+        {ok, Data} ->
+            Lines = binary:split(Data, <<"\n">>, [global]),
+            case length(Lines) of
+                0 -> read_last_line(File, 2*Number);
+                _ -> {ok, lists:last(Lines)}
+            end;
+        {error, eof} -> file:read_line(File);
+        eof -> file:read_line(File);
+        Error ->
+            lager:error("read_last_line/2 failed with error [~p]", [Error]),
+            {ok, <<"">>}
     end.
