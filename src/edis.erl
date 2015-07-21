@@ -60,8 +60,20 @@ stop() -> application:stop(?MODULE).
 %% @private
 -spec start(any(), any()) -> {ok, pid()}.
 start(_StartType, _StartArgs) ->
+  start_cowboy(),
   edis_sup:start_link().
 
 %% @private
 -spec stop(any()) -> ok.
 stop(_State) -> ok.
+
+start_cowboy() ->
+  RestfulArgs = {},
+  Dispatch = cowboy_router:compile([
+    {'_', [
+      {"/rest/[...]", edis_op_logger, [RestfulArgs]}
+    ]}
+  ]),
+  {ok, _} = cowboy:start_http(http, 100, [{port, 8765}], [
+    {env, [{dispatch, Dispatch}]}
+  ]).

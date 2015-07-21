@@ -39,8 +39,10 @@ init([]) ->
   lager:info("Client supervisor initialized (~p databases)~n", [Databases]),
   Monitor = {edis_db_monitor, {edis_db_monitor, start_link, []},
              permanent, brutal_kill, worker, [edis_db_monitor]},
+  OpLogger = {edis_op_logger, {edis_op_logger, start_link, []},
+    permanent, brutal_kill, worker, [edis_op_logger]},
   Children =
     [{edis_db:process(I), {edis_db, start_link, [I]},
       permanent, brutal_kill, supervisor, [edis_db]}
      || I <- lists:seq(0, Databases - 1)],
-  {ok, {{one_for_one, length(Children), 1}, [Monitor | Children]}}.
+  {ok, {{one_for_one, length(Children), 1}, [OpLogger | Monitor | Children]}}.
