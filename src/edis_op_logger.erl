@@ -240,7 +240,7 @@ open_op_log_file_for_write() ->
 -spec(open_op_log_file_for_read() -> none | term()). 
 open_op_log_file_for_read() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
-    case file:open(FileName, [raw, read, binary]) of
+    case file:open(FileName, [read, binary]) of
         {ok, File} -> File;
         {error, enoent} ->
             lager:info("no op log idx file found, deault to index 0", []),
@@ -311,19 +311,33 @@ split_index_from_op_log_line(BinLastLine) ->
 
 -spec(read_last_line(term()) -> {ok, binary()} | {error, atom()}).  %% just as file:read_line
 read_last_line(File) ->
-    read_last_line(File, 2).
+    read_last_line(<<"">>, File).
 
-read_last_line(File, Number) ->
-    case file:pread(File, {eof, -Number}, Number) of
+%read_last_line(File, Number) ->
+%    case file:pread(File, {eof, Number}, Number) of
+%        {ok, Data} ->
+%            Lines = binary:split(Data, <<"\n">>, [global]),
+%            case length(Lines) of
+%                N when N>=3 ->
+%                    {ok, lists:nth(N-1, Lines)};
+%                _ ->
+%                    read_last_line(File, Number*2)
+%            end;
+%        {error, eof} -> file:read_line(File);
+%        eof -> file:read_line(File);
+%        Error ->
+%            lager:error("read_last_line/2 failed with error [~p]", [Error]),
+%            {ok, <<"">>}
+%    end.
+
+
+read_last_line(Line, File) ->
+    case file:read_line(File) of
         {ok, Data} ->
-            Lines = binary:split(Data, <<"\n">>, [global]),
-            case length(Lines) of
-                0 -> read_last_line(File, 2*Number);
-                _ -> {ok, lists:last(Lines)}
-            end;
-        {error, eof} -> file:read_line(File);
-        eof -> file:read_line(File);
+            read_last_line(Data, File);
+        {error, eof} -> {ok, Line};
+        eof -> {ok, Line};
         Error ->
             lager:error("read_last_line/2 failed with error [~p]", [Error]),
-            {ok, <<"">>}
+            {ok, Line}
     end.

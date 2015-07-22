@@ -13,11 +13,11 @@
 -export([]).
 
 %% cowboy exports
--export([init/2]).
+-export([init/3]).
 -export([content_types_provided/2]).
 -export([streaming_csv/2]).
 
-init(Req, State) ->
+init(Req, State, _Opts) ->
     {cowboy_rest, Req, State}.
 
 content_types_provided(Req, State) ->

@@ -71,7 +71,7 @@ start_cowboy() ->
   RestfulArgs = {},
   Dispatch = cowboy_router:compile([
     {'_', [
-      {"/rest/oplog/[...]", edis_op_logger, [RestfulArgs]}
+      {"/rest/oplog/[...]", edis_rest_log_handler, [RestfulArgs]}
     ]}
   ]),
   {ok, _} = cowboy:start_http(http, 100, [{port, 8765}], [
