@@ -9,21 +9,21 @@
 -module(edis_rest_log_handler).
 -author("thi").
 
-%% API
--export([]).
-
-%% cowboy exports
 -export([init/3]).
+-export([rest_init/2]).
 -export([content_types_provided/2]).
 -export([streaming_csv/2]).
 
-init(Req, State, _Opts) ->
-    {cowboy_rest, Req, State}.
+init(_Transport, _Req, _Table) ->
+        {upgrade, protocol, cowboy_rest}.
+
+rest_init(Req, Table) ->
+        {ok, Req, Table}.
 
 content_types_provided(Req, State) ->
-    {[
-        {{<<"text">>, <<"csv">>, []}, streaming_csv}
-    ], Req, State}.
+        {[
+                {{<<"text">>, <<"csv">>, []}, streaming_csv}
+        ], Req, State}.
 
 streaming_csv(Req, State) ->
     File = edis_op_logger:open_op_log_file_for_read(),
