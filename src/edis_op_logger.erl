@@ -31,9 +31,9 @@
 -define(SERVER, ?MODULE).
 
 -record(state, {
-    op_log_file,
-    op_index,
-    server_id   =   <<"default_server">>
+        op_log_file                                 ::term(),
+        op_index                                    ::integer(),
+        server_id       =   <<"default_server">>    ::binary()   
 }).
 
 %%%===================================================================
@@ -120,7 +120,7 @@ init([]) ->
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
 
-handle_event({oplog, Command#edis_command{}}, State#state{op_log_file = OpLogFile, op_index = OpIndex}) ->
+handle_event({oplog, Command = #edis_command{}}, State = #state{op_log_file = OpLogFile, op_index = OpIndex}) ->
     BinOpLog = format_command_to_op_log(OpIndex, Command),
     write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
     {ok, State};
@@ -178,7 +178,7 @@ handle_info(_Info, State) ->
 -spec(terminate(Args :: (term() | {stop, Reason :: term()} | stop |
 remove_handler | {error, {'EXIT', Reason :: term()}} |
 {error, term()}), State :: term()) -> term()).
-terminate(_Arg, _State#state{op_log_file = OpLogFile}) ->
+terminate(_Arg, _State = #state{op_log_file = OpLogFile}) ->
     close_op_log_file(OpLogFile),
     ok.
 
@@ -199,7 +199,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-format_command_to_op_log(OpIndex, Command#edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args}) ->
+format_command_to_op_log(OpIndex, _Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args}) ->
     iolist_to_binary([make_sure_binay(OpIndex),
         ?OP_LOG_SEP, TimeStamp,
         ?OP_LOG_SEP, Db,
@@ -228,6 +228,7 @@ open_op_log_file_for_write() ->
             none
     end.
 
+-spec(open_op_log_file_for_read() -> none | term()). 
 open_op_log_file_for_read() ->
     FileName = ?DEFAULT_OP_LOG_FILE_NAME,
     case file:open(FileName, [raw, read, binary]) of
@@ -270,7 +271,7 @@ get_last_op_log_index() ->
     %% read to get current op log index first
     case open_op_log_file_for_read() of
         none ->
-            lager:error("read log idx file failed with error [~p]", [Error]),
+            lager:error("read log idx file failed", []),
             ?DEFAULT_OP_LOG_START_INDEX;
         File ->
             LastLine = read_last_line(File),
@@ -299,7 +300,7 @@ split_index_from_op_log_line(BinLastLine) ->
             ?DEFAULT_OP_LOG_START_INDEX
     end.
 
--spec(read_last_line(fd()) -> {ok, binary()} | {error, atom()}).  %% just as file:read_line
+-spec(read_last_line(term()) -> {ok, binary()} | {error, atom()}).  %% just as file:read_line
 read_last_line(File) ->
     read_last_line(File, 2).
 

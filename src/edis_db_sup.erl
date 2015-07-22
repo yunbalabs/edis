@@ -45,4 +45,4 @@ init([]) ->
     [{edis_db:process(I), {edis_db, start_link, [I]},
       permanent, brutal_kill, supervisor, [edis_db]}
      || I <- lists:seq(0, Databases - 1)],
-  {ok, {{one_for_one, length(Children), 1}, [OpLogger | Monitor | Children]}}.
+  {ok, {{one_for_one, length(Children), 1}, [OpLogger, Monitor] ++ Children}}.
