@@ -48,7 +48,9 @@
 %%--------------------------------------------------------------------
 -spec(start_link() -> {ok, pid()} | {error, {already_started, pid()}}).
 start_link() ->
-    gen_event:start_link({local, ?SERVER}).
+    Server = gen_event:start_link({local, ?SERVER}),
+    add_handler(),
+    Server.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -83,24 +85,26 @@ log_command(Command) ->
     {ok, State :: #state{}, hibernate} |
     {error, Reason :: term()}).
 
--define(DEFAULT_LOG_IDX_FILE, "priv/op_log.idx").
+-define(DEFAULT_LOG_IDX_FILE, "oplog/op_log.idx").
 -define(DEFAULT_START_OP_LOG_FILE_INDEX, 0).
 -define(DEFAULT_SERVER_ID, "server1").
 -define(DEFAULT_OP_COUNT_PER_LOG_FILE, 1000000).
 
--define(DEFAULT_OP_LOG_FILE_NAME, "priv/op_log.log").
+-define(DEFAULT_OP_LOG_FILE_NAME, "oplog/op_log.log").
 -define(OP_LOG_SEP, <<"\\">>).
 -define(DEFAULT_OP_LOG_START_INDEX, 0).
 
 init([]) ->
     %% get start op log index from file
-    StartOpIndex = get_last_op_log_index() + 1,
+    StartOpIndex = get_last_op_log_index(),
 
     %% get server id
     ServerId = ?DEFAULT_SERVER_ID,
 
     %% open log file to write op in
     OpLogFile = open_op_log_file_for_write(),
+
+    lager:debug("open log file [~p] start index [~p]", [?DEFAULT_OP_LOG_FILE_NAME, StartOpIndex]),
 
     {ok, #state{op_index = StartOpIndex, op_log_file = OpLogFile, server_id = ServerId}}.
 
@@ -120,10 +124,12 @@ init([]) ->
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
 
-handle_event({oplog, Command = #edis_command{}}, State = #state{op_log_file = OpLogFile, op_index = OpIndex}) ->
+handle_event({oplog, Command = #edis_command{}}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex}) ->
+    OpIndex = LastOpIndex + 1,
     BinOpLog = format_command_to_op_log(OpIndex, Command),
+    lager:debug("write OpIndex [~p]", [OpIndex]),
     write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
-    {ok, State};
+    {ok, State#state{op_index = OpIndex}};
 
 handle_event(_Event, State) ->
     {ok, State}.
@@ -201,10 +207,11 @@ code_change(_OldVsn, State, _Extra) ->
 
 format_command_to_op_log(OpIndex, _Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args}) ->
     iolist_to_binary([make_sure_binay(OpIndex),
-        ?OP_LOG_SEP, TimeStamp,
-        ?OP_LOG_SEP, Db,
-        ?OP_LOG_SEP, Cmd
-        ] ++ lists:foreach(Args, fun(E) -> iolist_to_binary([?OP_LOG_SEP, make_sure_binay(E)]) end)
+        ?OP_LOG_SEP, make_sure_binay(trunc(TimeStamp)),
+        ?OP_LOG_SEP, make_sure_binay(Db),
+        ?OP_LOG_SEP, make_sure_binay(Cmd)
+        ] ++ lists:map(fun(E) -> iolist_to_binary([?OP_LOG_SEP, make_sure_binay(E)]) end, Args)
+        ++ "\n"
     ).
 
 make_sure_binay(Data) ->
@@ -215,6 +222,8 @@ make_sure_binay(Data) ->
             list_to_binary(Data);
         is_atom(Data) ->
             atom_to_binary(Data, latin1);
+        is_float(Data) ->
+            float_to_binary(Data);
         true ->
             Data
     end.
