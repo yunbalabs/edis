@@ -22,6 +22,9 @@
     split_index_from_op_log_line/1
 ]).
 
+-export([format_command_to_op_log/2,
+    make_command_from_op_log/1]).
+
 %% gen_event callbacks
 -export([init/1,
     handle_event/2,
@@ -207,14 +210,37 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-format_command_to_op_log(OpIndex, _Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args}) ->
-    iolist_to_binary([make_sure_binay(OpIndex),
-        ?OP_LOG_SEP, make_sure_binay(trunc(TimeStamp)),
-        ?OP_LOG_SEP, make_sure_binay(Db),
-        ?OP_LOG_SEP, make_sure_binay(Cmd)
+format_command_to_op_log(OpIndex, _Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = Group, result_type = ResultType}) ->
+    iolist_to_binary([make_sure_binay(OpIndex)
+        , ?OP_LOG_SEP, make_sure_binay(trunc(TimeStamp))
+        , ?OP_LOG_SEP, make_sure_binay(Db)
+        , ?OP_LOG_SEP, make_sure_binay(Cmd)
+        , ?OP_LOG_SEP, make_sure_binay(Group)
+        , ?OP_LOG_SEP, make_sure_binay(ResultType)
         ] ++ lists:map(fun(E) -> iolist_to_binary([?OP_LOG_SEP, make_sure_binay(E)]) end, Args)
         ++ "\n"
     ).
+
+make_command_from_op_log(BinOpLog) ->
+    [BinOpIndex, Bin1] = binary:split(BinOpLog, ?OP_LOG_SEP),
+    [BinTimeStamp, Bin2] = binary:split(Bin1, ?OP_LOG_SEP),
+    [BinDb, Bin3] = binary:split(Bin2, ?OP_LOG_SEP),
+    [BinCmd, Bin4] = binary:split(Bin3, ?OP_LOG_SEP),
+    [BinGroup, Bin5] = binary:split(Bin4, ?OP_LOG_SEP),
+    [BinResultType, Bin6] = binary:split(Bin5, ?OP_LOG_SEP),
+    Args = binary:split(Bin6, ?OP_LOG_SEP, [global]),
+
+    {binary_to_integer(BinOpIndex),
+        #edis_command{
+            timestamp = binary_to_integer(BinTimeStamp) + 0.0,
+            db = binary_to_integer(BinDb),
+            cmd = BinCmd,
+            group = binary_to_atom(BinGroup, latin1),
+            result_type = binary_to_atom(BinResultType, latin1),
+            args = Args
+    }}.
+
+
 
 make_sure_binay(Data) ->
     if
