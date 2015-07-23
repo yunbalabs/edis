@@ -50,18 +50,20 @@ send_records(Socket, Transport, File) ->
                     send_records(Socket, Transport, File);
                 eof ->
                     lager:error("read_line finished with eof", []),
-                    ok;
+                    send_records(Socket, Transport, File);
                 {error, eof} ->
                     lager:error("read_line finished with {error, eof}", []),
-                    ok;
+                    send_records(Socket, Transport, File);
                 Error ->
-                    lager:error("read_line failed with error [~p]", [Error])
+                    lager:error("read_line failed with error [~p]", [Error]),
+                    ok
             end
     end.
 
 send_line(Socket, Transport, OpLine) ->
     Transport:send(Socket,
-        [OpLine, $\r, $\n]).
+        %[OpLine, $\r, $\n]).
+        [OpLine]).
 
 get_req_index(Req) ->
     {_Method, Req2} = cowboy_req:method(Req),
