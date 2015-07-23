@@ -18,7 +18,9 @@
 
 -export([log_command/1]).
 
--export([open_op_log_file_for_read/0]).
+-export([open_op_log_file_for_read/0,
+    split_index_from_op_log_line/1
+]).
 
 %% gen_event callbacks
 -export([init/1,
