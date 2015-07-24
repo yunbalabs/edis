@@ -33,6 +33,9 @@ main(Args) ->
     [ConfigFile] -> edis_util:load_config(ConfigFile)
   end,
   crypto:start(),
+  application:start(public_key),
+  ssl:start(),
+  inets:start(),
   ok = application:start(lager),
   ok = start(),
   Pid = erlang:whereis(edis_sup),

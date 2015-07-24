@@ -16,7 +16,7 @@
 -export([start_link/0,
     add_handler/0]).
 
--export([log_command/1]).
+-export([log_command/1, rest_sync/1]).
 
 -export([open_op_log_file_for_read/0,
     split_index_from_op_log_line/1
@@ -38,7 +38,9 @@
 -record(state, {
         op_log_file                                 ::term(),
         op_index                                    ::integer(),
-        server_id       =   <<"default_server">>    ::binary()   
+        server_id       =   <<"default_server">>    ::binary(),
+        rest_request_id                             ::term(),
+        client
 }).
 
 %%%===================================================================
@@ -73,6 +75,12 @@ add_handler() ->
 log_command(Command) ->
     gen_event:notify(?MODULE, {oplog, Command}).
 
+%% @doc Notifies a rest sync.
+-spec rest_sync(binary()) -> ok.
+rest_sync(Url) ->
+    gen_event:notify(?MODULE, {rest_sync, Url}).
+
+
 %%%===================================================================
 %%% gen_event callbacks
 %%%===================================================================
@@ -100,6 +108,12 @@ log_command(Command) ->
 -define(DEFAULT_OP_LOG_START_INDEX, 0).
 
 init([]) ->
+
+    crypto:start(),
+    application:start(public_key),
+    ssl:start(),
+    inets:start(),
+
     %% get start op log index from file
     StartOpIndex = get_last_op_log_index(),
 
@@ -111,7 +125,9 @@ init([]) ->
 
     lager:debug("open log file [~p] start index [~p]", [?DEFAULT_OP_LOG_FILE_NAME, StartOpIndex]),
 
-    {ok, #state{op_index = StartOpIndex, op_log_file = OpLogFile, server_id = ServerId}}.
+    Client = edis_db:process(0),
+
+    {ok, #state{op_index = StartOpIndex, op_log_file = OpLogFile, server_id = ServerId, client = Client}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -135,6 +151,11 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{op_log_file = Op
     lager:debug("write OpIndex [~p]", [OpIndex]),
     write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
     {ok, State#state{op_index = OpIndex}};
+
+handle_event({rest_sync, Url}, State = #state{}) ->
+    RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}]),
+    lager:debug("rest sync from url [~p] requstId [~p]", [Url, RestRequestId]),
+    {ok, State#state{rest_request_id = RestRequestId}};
 
 handle_event(_Event, State) ->
     {ok, State}.
@@ -173,6 +194,20 @@ handle_call(_Request, State) ->
     {swap_handler, Args1 :: term(), NewState :: #state{},
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
+handle_info({http, {RequestId, stream_start, Headers}}, State) ->
+    lager:debug("stream started [~p]", [Headers]),
+    http:stream_next(RequestId),
+    {ok, State};
+handle_info({http, {RequestId, stream, BinBodyPart}}, State = #state{client = Client}) ->
+    lager:debug("stream body", [BinBodyPart]),
+    {_Index, Command} = edis_op_logger:make_command_from_op_log(BinBodyPart),
+    edis_db:run(Client, Command),
+    http:stream_next(RequestId),
+    {ok, State};
+handle_info({http, {RequestId, stream_end, _Headers}}, State) ->
+    lager:debug("stream end", []),
+    http:stream_next(RequestId),
+    {ok, State};
 handle_info(_Info, State) ->
     {ok, State}.
 

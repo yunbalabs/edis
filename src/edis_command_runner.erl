@@ -26,7 +26,7 @@
                 subscriptions = undefined :: undefined | {gb_set(), gb_set()}}).
 -opaque state() :: #state{}.
 
--export([start_link/1, stop/1, err/2, run/3]).
+-export([start_link/1, stop/1, err/2, run/3, run_log/3]).
 -export([last_arg/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
@@ -52,6 +52,11 @@ err(Runner, Message) ->
 -spec run(pid(), binary(), [binary()]) -> ok.
 run(Runner, Command, Arguments) ->
   gen_server:cast(Runner, {run, Command, Arguments}).
+
+%% @doc executes the received command
+-spec run_log(pid(), binary(), [binary()]) -> ok.
+run_log(Runner, Command, Arguments) ->
+  gen_server:cast(Runner, {run_log, Command, Arguments}).
 
 %% @doc should last argument be inlined?
 %%      Useful for old protocol calls.
@@ -92,6 +97,30 @@ handle_cast({run, Cmd, Args}, State) ->
     Command = parse_command(OriginalCommand),
     ok = edis_db_monitor:notify(OriginalCommand),
       ok = edis_op_logger:log_command(OriginalCommand),
+    case {State#state.multi_queue, State#state.subscriptions} of
+      {undefined, undefined} -> run(Command, State);
+      {undefined, _InPubSub} -> pubsub(Command, State);
+      {_InMulti, undefined} -> queue(Command, State);
+      {_InMulti, _InPubSub} -> throw(invalid_context)
+    end
+  catch
+    _:timeout ->
+      tcp_multi_bulk(undefined, State);
+    _:invalid_password ->
+      lager:warning("Invalid password.~n", []),
+      tcp_err(<<"invalid password">>, State#state{authenticated = false});
+    _:Error ->
+      lager:error("Error in db ~p: ~p~nStack: ~p", [State#state.db_index, Error, erlang:get_stacktrace()]),
+      tcp_err(parse_error(Cmd, Error), State)
+  end;
+
+handle_cast({run_log, Cmd, Args}, State) ->
+  try
+    OriginalCommand = #edis_command{cmd = Cmd,
+      db = State#state.db_index,
+      args = Args},
+    Command = parse_command(OriginalCommand),
+    ok = edis_db_monitor:notify(OriginalCommand),
     case {State#state.multi_queue, State#state.subscriptions} of
       {undefined, undefined} -> run(Command, State);
       {undefined, _InPubSub} -> pubsub(Command, State);
