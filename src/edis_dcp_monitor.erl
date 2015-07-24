@@ -62,12 +62,7 @@ start_link() ->
 init([]) ->
   StartSeqNo = 1,
   ProducerAddr = edis_config:get(dcp_producer_addr, ["127.0.0.1", 12121]),
-  case edis_dcp_handler:open_stream(ProducerAddr, [1, StartSeqNo, 0], 100000) of
-    {ok, _} ->
-      ok;
-    _ ->
-      erlang:send_after(10000, self(), synchronize)
-  end,
+  self() ! synchronize,
   {ok, #state{seqno = StartSeqNo, producer_addr = ProducerAddr}}.
 
 %%--------------------------------------------------------------------
@@ -123,7 +118,7 @@ handle_cast(_Request, State) ->
   {noreply, NewState :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: #state{}}).
 handle_info(synchronize, State = #state{seqno = SeqNo, producer_addr = ProducerAddr}) ->
-  edis_dcp_handler:open_stream(ProducerAddr, [1, SeqNo, 0], 100000),
+  start_synchronize(ProducerAddr, SeqNo),
   {noreply, State};
 handle_info(_Info, State) ->
   {noreply, State}.
@@ -161,3 +156,10 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
+start_synchronize(ProducerAddr, StartSeqNo) ->
+  case edis_dcp_handler:open_stream(ProducerAddr, [1, StartSeqNo, 0], 100000) of
+    {ok, _} ->
+      ok;
+    _ ->
+      erlang:send_after(10000, self(), synchronize)
+  end.
