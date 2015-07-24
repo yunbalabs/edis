@@ -104,7 +104,7 @@ rest_sync(Url) ->
 -define(DEFAULT_OP_COUNT_PER_LOG_FILE, 1000000).
 
 -define(DEFAULT_OP_LOG_FILE_NAME, "oplog/op_log.log").
--define(OP_LOG_SEP, <<"\\">>).
+-define(OP_LOG_SEP, <<" ">>).
 -define(DEFAULT_OP_LOG_START_INDEX, 0).
 
 init([]) ->
@@ -153,7 +153,7 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{op_log_file = Op
     {ok, State#state{op_index = OpIndex}};
 
 handle_event({rest_sync, Url}, State = #state{}) ->
-    RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}]),
+    RestRequestId = httpc:request(get, {Url, []}, [], [{sync, false}, {stream, self}, {body_format, binary}]),
     lager:debug("rest sync from url [~p] requstId [~p]", [Url, RestRequestId]),
     {ok, State#state{rest_request_id = RestRequestId}};
 
@@ -194,21 +194,19 @@ handle_call(_Request, State) ->
     {swap_handler, Args1 :: term(), NewState :: #state{},
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
-handle_info({http, {RequestId, stream_start, Headers}}, State) ->
+handle_info({http, {_RequestId, stream_start, Headers}}, State) ->
     lager:debug("stream started [~p]", [Headers]),
-    http:stream_next(RequestId),
     {ok, State};
-handle_info({http, {RequestId, stream, BinBodyPart}}, State = #state{client = Client}) ->
+handle_info({http, {_RequestId, stream, BinBodyPart}}, State = #state{client = Client}) ->
     lager:debug("stream body", [BinBodyPart]),
     {_Index, Command} = edis_op_logger:make_command_from_op_log(BinBodyPart),
     edis_db:run(Client, Command),
-    http:stream_next(RequestId),
     {ok, State};
-handle_info({http, {RequestId, stream_end, _Headers}}, State) ->
+handle_info({http, {_RequestId, stream_end, _Headers}}, State) ->
     lager:debug("stream end", []),
-    http:stream_next(RequestId),
     {ok, State};
 handle_info(_Info, State) ->
+    lager:debug("info [~p]", [_Info]),
     {ok, State}.
 
 %%--------------------------------------------------------------------
