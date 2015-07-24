@@ -21,12 +21,16 @@
 
 -compile([{parse_transform, lager_transform}]).
 
+-record(consumer_state, {edis_client, seq_num}).
+
 %%%===================================================================
 %%% API
 %%%===================================================================
 open_stream([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd], Timeout) ->
     Client = edis_db:process(0),
-    edcp_consumer_sup:start([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd], Timeout, Client).
+    edcp_consumer_sup:start([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd], Timeout, #consumer_state{
+        edis_client = Client, seq_num = SeqNoStart - 1
+    }).
 
 %%%===================================================================
 %%% edcp_producer callbacks
@@ -38,13 +42,27 @@ stream_starting(VBucketUUID, SeqStart, SeqEnd) ->
         none ->
             {error, open_log_file_failed};
         File ->
-            SnapShotList = [{SeqStart, SeqEnd}],
-            {ok, SnapShotList, File}
+            {ok, File}
     end.
 
-stream_snapshot(SnapshotStart, SnapshotEnd, File) ->
-    ItemList = snapshot(File, []),
-    {ok, ItemList, File}.
+stream_snapshot(SnapshotStart, 0, File) ->
+    case get_snapshots(SnapshotStart, 10, File) of
+        [] ->
+            {stop, File};
+        SnapShot ->
+            {ok, SnapShot, File}
+    end;
+stream_snapshot(SnapshotStart, SeqEnd, File) when SeqEnd >= SnapshotStart ->
+    SnapshotLen = if
+                      SeqEnd - SnapshotStart > 1 -> 2;
+                      true -> SeqEnd - SnapshotStart + 1
+                  end,
+    case get_snapshots(SnapshotStart, SnapshotLen, File) of
+        [] ->
+            {stop, File};
+        SnapShot ->
+            {ok, SnapShot, File}
+    end.
 
 stream_end(_File) ->
     ok.
@@ -52,40 +70,46 @@ stream_end(_File) ->
 %%%===================================================================
 %%% edcp_consumer callbacks
 %%%===================================================================
-handle_snapshot_item(Item = {SeqNo, Log}, Client) ->
+handle_snapshot_item({SeqNo, Log}, State = #consumer_state{edis_client = Client}) ->
     {SeqNo, EdisCmd} = edis_op_logger:make_command_from_op_log(Log),
     lager:debug("receive ~p", [EdisCmd]),
     edis_db:run(Client, EdisCmd),
-    {ok, Client}.
+    {ok, State#consumer_state{seq_num = SeqNo}}.
 
-handle_stream_error(Error, _Client) ->
+handle_stream_error(Error, #consumer_state{seq_num = SeqNo}) ->
     lager:debug("stream error ~p", [Error]),
+    gen_server:cast(edis_dcp_monitor, {stream_error, SeqNo}),
     ok.
 
-handle_stream_end(?Flag_OK, _Client) ->
-    lager:debug("stream end normally"),
-    ok;
-handle_stream_end(ErrorFlag, _Client) ->
-    lager:error("stream end with error ~p", [ErrorFlag]),
+handle_stream_end(Flag, #consumer_state{seq_num = SeqNo}) ->
+    lager:debug("stream end with flag ~p", [Flag]),
+    gen_server:cast(edis_dcp_monitor, {stream_end, SeqNo}),
     ok.
 
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-snapshot(File, Items) ->
-    case file:read_line(File) of
-        {ok, Data} ->
-            {OpIndex, Log} = parse_line(Data),
-            snapshot(File, [{OpIndex, Log} | Items]);
-        _Error ->
-            Items
+get_snapshots(StartNum, Len, File) ->
+    get_snapshots(StartNum, Len, File, []).
+
+get_snapshots(_StartNum, 0, _File, SnapShot) ->
+    lists:reverse(SnapShot);
+get_snapshots(StartNum, Len, File, SnapShot) ->
+    case get_log(File) of
+        file_end ->
+            lists:reverse(SnapShot);
+        {ok, StartNum, Log} ->
+            get_snapshots(StartNum + 1, Len - 1, File, [{StartNum, Log} | SnapShot]);
+        {ok, _Index, _Data} ->
+            get_snapshots(StartNum, Len, File, SnapShot)
     end.
 
-parse_line(Data) ->
-    [OpIndexBin, _Rest] = parse_rest(Data),
-    OpIndex = binary_to_integer(OpIndexBin),
-    Log = binary:part(Data, {0, size(Data) - 1}),
-    {OpIndex, Log}.
-
-parse_rest(Rest) ->
-    binary:split(Rest, <<"\\">>).
+get_log(File) ->
+    case file:read_line(File) of
+        {ok, Data} ->
+            Index = edis_op_logger:split_index_from_op_log_line(Data),
+            Log = binary:part(Data, {0, size(Data) - 1}),
+            {ok, Index, Log};
+        _Error ->
+            file_end
+    end.

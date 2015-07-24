@@ -9,7 +9,7 @@
 -author('Fernando Benavides <fernando.benavides@inakanetworks.com>').
 -author('Chad DePue <chad@inakanetworks.com>').
 
--export([get/1, set/2]).
+-export([get/1, get/2, set/2]).
 
 -include("edis.hrl").
 

@@ -69,11 +69,12 @@ stop(_State) -> ok.
 
 start_cowboy() ->
   RestfulArgs = {},
+  Port = edis_config:get(cowboy_port, 8765),
   Dispatch = cowboy_router:compile([
     {'_', [
       {"/rest/oplog/[...]", edis_rest_log_handler, [RestfulArgs]}
     ]}
   ]),
-  {ok, _} = cowboy:start_http(http, 100, [{port, 8765}], [
+  {ok, _} = cowboy:start_http(http, 100, [{port, Port}], [
     {env, [{dispatch, Dispatch}]}
   ]).
