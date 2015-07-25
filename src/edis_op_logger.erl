@@ -104,7 +104,7 @@ rest_sync(Url) ->
 -define(DEFAULT_OP_COUNT_PER_LOG_FILE, 1000000).
 
 -define(DEFAULT_OP_LOG_FILE_NAME, "oplog/op_log.log").
--define(OP_LOG_SEP, <<" ">>).
+-define(OP_LOG_SEP, <<"\\">>).
 -define(DEFAULT_OP_LOG_START_INDEX, 0).
 
 init([]) ->
@@ -198,7 +198,7 @@ handle_info({http, {_RequestId, stream_start, Headers}}, State) ->
     lager:debug("stream started [~p]", [Headers]),
     {ok, State};
 handle_info({http, {_RequestId, stream, BinBodyPart}}, State = #state{client = Client}) ->
-    lager:debug("stream body", [BinBodyPart]),
+    lager:debug("stream body [~p]", [BinBodyPart]),
     {_Index, Command} = edis_op_logger:make_command_from_op_log(BinBodyPart),
     edis_db:run(Client, Command),
     {ok, State};

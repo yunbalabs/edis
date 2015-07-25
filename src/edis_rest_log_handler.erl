@@ -8,62 +8,53 @@
 %%%-------------------------------------------------------------------
 -module(edis_rest_log_handler).
 -author("thi").
-
--export([init/3]).
--export([rest_init/2]).
--export([content_types_provided/2]).
--export([streaming_csv/2]).
-
 -define(DEFAULT_REQ_INDEX, 0).
 
-init(_Transport, _Req, _Table) ->
-        {upgrade, protocol, cowboy_rest}.
+-behaviour(cowboy_http_handler).
+-export([init/3, handle/2, terminate/3]).
 
-rest_init(Req, Table) ->
-        {ok, Req, Table}.
+init({_Transport, http}, Req, _Opts) ->
+    {ok, Req, undefined}.
 
-content_types_provided(Req, State) ->
-        {[
-                {{<<"text">>, <<"csv">>, []}, streaming_csv}
-        ], Req, State}.
+handle(Req, State) ->
+    Req2 = cowboy_req:set([{resp_state, waiting_stream}], Req),
+    {ok, Req3} = cowboy_req:chunked_reply(200, Req2),
 
-streaming_csv(Req, State) ->
     Index = get_req_index(Req),
     File = edis_op_logger:open_op_log_file_for_read(),
     position_file_to_index(File, Index),
-    {{stream, result_streamer(State, File)}, Req, State}.
 
-result_streamer(_State, File) ->
-    fun (Socket, Transport) ->
-        send_records(Socket, Transport, File)
-    end.
+    send_records(Req3, File),
+    {ok, Req3, State}.
 
-send_records(Socket, Transport, File) ->
+terminate(_, _, _) ->
+    ok.
+
+send_records(Req, File) ->
     timer:sleep(500),
     case File of
-        none -> send_line(Socket, Transport, <<"">>),
+        none -> send_line(Req, <<"">>),
         ok;
         _ ->
             case file:read_line(File) of
                 {ok, Data} ->
-                    send_line(Socket, Transport, Data),
-                    send_records(Socket, Transport, File);
+                    Line = binary:part(Data, 0, max(0, byte_size(Data)-1)),
+                    send_line(Req, Line),
+                    send_records(Req, File);
                 eof ->
-                    lager:error("read_line finished with eof", []),
-                    send_records(Socket, Transport, File);
+                    %lager:error("read_line finished with eof", []),
+                    send_records(Req, File);
                 {error, eof} ->
-                    lager:error("read_line finished with {error, eof}", []),
-                    send_records(Socket, Transport, File);
+                    %lager:error("read_line finished with {error, eof}", []),
+                    send_records(Req, File);
                 Error ->
                     lager:error("read_line failed with error [~p]", [Error]),
                     ok
             end
     end.
 
-send_line(Socket, Transport, OpLine) ->
-    Transport:send(Socket,
-        %[OpLine, $\r, $\n]).
-        [OpLine]).
+send_line(Req, OpLine) ->
+    cowboy_req:chunk(OpLine, Req).
 
 get_req_index(Req) ->
     {_Method, Req2} = cowboy_req:method(Req),
