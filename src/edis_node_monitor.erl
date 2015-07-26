@@ -43,7 +43,11 @@ start_link() ->
 %%--------------------------------------------------------------------
 init([]) ->
   ok = net_kernel:monitor_nodes(true, [nodedown_reason]),
-  net_adm:world(),
+  try
+    net_adm:world()
+  catch E:T ->
+    lager:error("net_adm:world exception [~p:~p]", [E, T])
+  end,
   {ok, #state{}}.
 
 %%--------------------------------------------------------------------
