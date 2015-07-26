@@ -33,6 +33,11 @@ _SYNC_, _SLOWLOG_, _SLAVEOF_, _DEBUG *_
 ### License
 edis is licensed by Electronic Inaka, LLC under the Apache 2.0 license; see the LICENSE file in this repository.
 
+### log synchronization by restful api
+run subcommand in edis console to trigger restful api log synchronization(replace localhost by master edis):
+```
+edis_op_logger:rest_sync("http://localhost:8765/rest/oplog/?index=...”).￼
+```
 ### TODO
 
 * Backends
