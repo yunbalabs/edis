@@ -69,7 +69,6 @@ start_link() ->
 add_handler() ->
     gen_event:add_handler(?SERVER, ?MODULE, []).
 
-
 %% @doc Notifies an op log.
 -spec log_command(#edis_command{}) -> ok.
 log_command(Command) ->
@@ -108,7 +107,6 @@ rest_sync(Url) ->
 -define(DEFAULT_OP_LOG_START_INDEX, 0).
 
 init([]) ->
-
     crypto:start(),
     application:start(public_key),
     ssl:start(),
@@ -199,8 +197,12 @@ handle_info({http, {_RequestId, stream_start, Headers}}, State) ->
     {ok, State};
 handle_info({http, {_RequestId, stream, BinBodyPart}}, State = #state{client = Client}) ->
     lager:debug("stream body [~p]", [BinBodyPart]),
-    {_Index, Command} = edis_op_logger:make_command_from_op_log(BinBodyPart),
-    edis_db:run(Client, Command),
+    try
+        {_Index, Command} = edis_op_logger:make_command_from_op_log(BinBodyPart),
+        edis_db:run(Client, Command)
+    catch E:T ->
+        lager:error("make command or run command [~p] failed [~p:~p]", [BinBodyPart, E ,T])
+    end,
     {ok, State};
 handle_info({http, {_RequestId, stream_end, _Headers}}, State) ->
     lager:debug("stream end", []),

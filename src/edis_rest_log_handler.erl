@@ -10,51 +10,67 @@
 -author("thi").
 -define(DEFAULT_REQ_INDEX, 0).
 
--behaviour(cowboy_http_handler).
--export([init/3, handle/2, terminate/3]).
+-behaviour(cowboy_loop_handler).
 
-init({_Transport, http}, Req, _Opts) ->
-    {ok, Req, undefined}.
+-export([init/3]).
+-export([info/3]).
+-export([terminate/3]).
 
-handle(Req, State) ->
-    Req2 = cowboy_req:set([{resp_state, waiting_stream}], Req),
-    {ok, Req3} = cowboy_req:chunked_reply(200, Req2),
+-record(state, {
+    file			:: term()
+}).
 
+init(_, Req, _) ->
+    self() ! response,
+    {loop, Req, #state{}, hibernate}.
+
+info(response, Req, State) ->
     Index = get_req_index(Req),
     File = edis_op_logger:open_op_log_file_for_read(),
     position_file_to_index(File, Index),
+    Req2 = cowboy_req:set([{resp_state, waiting_stream}], Req),
+    {ok, Req3} = cowboy_req:chunked_reply(200, Req2),
+    trigger_send_line(),
+    {loop, Req3, State#state{file = File}};
 
-    send_records(Req3, File),
-    {ok, Req3, State}.
+info(send_line, Req, State = #state{file = File}) ->
+    case send_line(Req, File) of
+        ok ->
+            trigger_send_line(),
+            {loop, Req, State};
+        _ ->
+            {ok, Req, State}
+    end.
 
-terminate(_, _, _) ->
+terminate(Reason, _, _) ->
+    lager:debug("Req terminate by [~p]", [Reason]),
     ok.
 
-send_records(Req, File) ->
+trigger_send_line() ->
+    self() ! send_line.
+
+send_line(Req, File) ->
     timer:sleep(500),
     case File of
-        none -> send_line(Req, <<"">>),
-        ok;
+        none -> error;
         _ ->
             case file:read_line(File) of
                 {ok, Data} ->
                     Line = binary:part(Data, 0, max(0, byte_size(Data)-1)),
-                    send_line(Req, Line),
-                    send_records(Req, File);
+                    cowboy_req:chunk(Line, Req),
+                    ok;
                 eof ->
                     %lager:error("read_line finished with eof", []),
-                    send_records(Req, File);
+                    ok;
                 {error, eof} ->
                     %lager:error("read_line finished with {error, eof}", []),
-                    send_records(Req, File);
+                    ok;
                 Error ->
                     lager:error("read_line failed with error [~p]", [Error]),
-                    ok
+                    file:close(File),
+                    error
             end
     end.
-
-send_line(Req, OpLine) ->
-    cowboy_req:chunk(OpLine, Req).
 
 get_req_index(Req) ->
     {_Method, Req2} = cowboy_req:method(Req),
