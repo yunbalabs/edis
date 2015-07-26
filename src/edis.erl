@@ -77,6 +77,7 @@ start_cowboy() ->
       {"/rest/oplog/[...]", edis_rest_log_handler, [RestfulArgs]}
     ]}
   ]),
-  {ok, _} = cowboy:start_http(http, 100, [{port, 8765}], [
+  RestListenPort = edis_config:get(rest_listen_port),
+  {ok, _} = cowboy:start_http(http, 100, [{port, RestListenPort}], [
     {env, [{dispatch, Dispatch}]}
   ]).
