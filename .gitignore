@@ -10,3 +10,6 @@ log/
 *~
 .hosts.erlang
 rel/edis/
+.idea
+.rebar
+*.iml
