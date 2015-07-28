@@ -38,6 +38,8 @@ open_stream([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd], Timeout) ->
 stream_starting(VBucketUUID, SeqStart, SeqEnd) ->
     lager:debug("start stream with ~p ~p-~p", [VBucketUUID, SeqStart, SeqEnd]),
 
+    edis_op_logger:notify_synchronize(self()),
+
     case edis_op_logger:open_op_log_file_for_read() of
         none ->
             {error, open_log_file_failed};
@@ -48,7 +50,7 @@ stream_starting(VBucketUUID, SeqStart, SeqEnd) ->
 stream_snapshot(SnapshotStart, 0, File) ->
     case get_snapshots(SnapshotStart, 10, File) of
         [] ->
-            {stop, File};
+            {hang, File};
         SnapShot ->
             {ok, SnapShot, File}
     end;
@@ -59,7 +61,7 @@ stream_snapshot(SnapshotStart, SeqEnd, File) when SeqEnd >= SnapshotStart ->
                   end,
     case get_snapshots(SnapshotStart, SnapshotLen, File) of
         [] ->
-            {stop, File};
+            {hang, File};
         SnapShot ->
             {ok, SnapShot, File}
     end.
@@ -108,7 +110,7 @@ get_log(File) ->
     case file:read_line(File) of
         {ok, Data} ->
             Index = edis_op_logger:split_index_from_op_log_line(Data),
-            Log = binary:part(Data, {0, size(Data) - 1}),
+            Log = binary:part(Data, {0, max(0, size(Data) - 1)}),
             {ok, Index, Log};
         _Error ->
             file_end

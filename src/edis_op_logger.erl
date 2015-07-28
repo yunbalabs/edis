@@ -16,7 +16,7 @@
 -export([start_link/0,
     add_handler/0]).
 
--export([log_command/1]).
+-export([log_command/1, notify_synchronize/1]).
 
 -export([open_op_log_file_for_read/0,
     split_index_from_op_log_line/1
@@ -38,7 +38,8 @@
 -record(state, {
         op_log_file                                 ::term(),
         op_index                                    ::integer(),
-        server_id       =   <<"default_server">>    ::binary()   
+        server_id       =   <<"default_server">>    ::binary(),
+        synchronize_pid = undefined                 ::pid()
 }).
 
 %%%===================================================================
@@ -72,6 +73,9 @@ add_handler() ->
 -spec log_command(#edis_command{}) -> ok.
 log_command(Command) ->
     gen_event:notify(?MODULE, {oplog, Command}).
+
+notify_synchronize(Pid) ->
+    gen_event:notify(?MODULE, {synchronize, Pid}).
 
 %%%===================================================================
 %%% gen_event callbacks
@@ -129,12 +133,32 @@ init([]) ->
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
 
-handle_event({oplog, Command = #edis_command{}}, State = #state{op_log_file = OpLogFile, op_index = LastOpIndex}) ->
+handle_event({oplog, Command = #edis_command{}}, State = #state{
+    op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = undefined
+}) ->
     OpIndex = LastOpIndex + 1,
     BinOpLog = format_command_to_op_log(OpIndex, Command),
     lager:debug("write OpIndex [~p]", [OpIndex]),
     write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
     {ok, State#state{op_index = OpIndex}};
+handle_event({oplog, Command = #edis_command{}}, State = #state{
+    op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = SyncPid
+}) ->
+    OpIndex = LastOpIndex + 1,
+    BinOpLog = format_command_to_op_log(OpIndex, Command),
+    lager:debug("write OpIndex [~p]", [OpIndex]),
+    write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
+
+    case is_process_alive(SyncPid) of
+        true ->
+            edcp_producer:push_item(SyncPid, {OpIndex, binary:part(BinOpLog, {0, max(0, size(BinOpLog) - 1)})}),
+            {ok, State#state{op_index = OpIndex}};
+        _ ->
+            {ok, State#state{op_index = OpIndex, synchronize_pid = undefined}}
+    end;
+
+handle_event({synchronize, Pid}, State) ->
+    {ok, State#state{synchronize_pid = Pid}};
 
 handle_event(_Event, State) ->
     {ok, State}.
