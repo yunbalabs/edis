@@ -78,7 +78,11 @@ stream_info(_Info, ModState) ->
 handle_snapshot_item({SeqNo, Log}, State = #consumer_state{edis_client = Client}) ->
     {SeqNo, EdisCmd} = edis_op_logger:make_command_from_op_log(Log),
     lager:debug("receive ~p", [EdisCmd]),
-    edis_db:run(Client, EdisCmd),
+    try
+        edis_db:run(Client, EdisCmd)
+    catch E:T ->
+        lager:error("run command [~p] failed [~p:~p]", [EdisCmd, E ,T])
+    end,
     {ok, State#consumer_state{seq_num = SeqNo}}.
 
 handle_stream_error(Error, #consumer_state{seq_num = SeqNo}) ->

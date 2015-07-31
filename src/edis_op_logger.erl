@@ -133,6 +133,8 @@ init([]) ->
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
 
+handle_event({oplog, Command = #edis_command{cmd = <<"QUIT">>}}, State) ->
+    {ok, State};
 handle_event({oplog, Command = #edis_command{}}, State = #state{
     op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = undefined
 }) ->
@@ -251,8 +253,13 @@ make_command_from_op_log(BinOpLog) ->
     [BinDb, Bin3] = binary:split(Bin2, ?OP_LOG_SEP),
     [BinCmd, Bin4] = binary:split(Bin3, ?OP_LOG_SEP),
     [BinGroup, Bin5] = binary:split(Bin4, ?OP_LOG_SEP),
-    [BinResultType, Bin6] = binary:split(Bin5, ?OP_LOG_SEP),
-    Args = binary:split(Bin6, ?OP_LOG_SEP, [global]),
+    {BinResultType, Args} = case binary:split(Bin5, ?OP_LOG_SEP) of
+                                [BinResultType2, Bin6] ->
+                                    Args2 = binary:split(Bin6, ?OP_LOG_SEP, [global]),
+                                    {BinResultType2, Args2};
+                                [BinResultType2] ->
+                                    {BinResultType2, []}
+                            end,
 
     {binary_to_integer(BinOpIndex),
         #edis_command{
