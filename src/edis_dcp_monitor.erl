@@ -157,7 +157,7 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 start_synchronize(ProducerAddr, StartSeqNo) ->
-  case edis_dcp_handler:open_stream(ProducerAddr, [1, StartSeqNo, 0], 100000) of
+  case edis_dcp_handler:open_stream(ProducerAddr, [1, StartSeqNo, 0]) of
     {ok, _} ->
       ok;
     _ ->

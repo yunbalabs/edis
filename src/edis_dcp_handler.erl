@@ -15,8 +15,8 @@
 -include_lib("edcp/include/edcp_protocol.hrl").
 
 -export([
-    open_stream/3,
-    stream_starting/3, stream_snapshot/3, stream_end/1,
+    open_stream/2,
+    stream_starting/3, stream_snapshot/3, stream_end/1, stream_info/2,
     handle_snapshot_item/2, handle_stream_error/2, handle_stream_end/2]).
 
 -compile([{parse_transform, lager_transform}]).
@@ -26,9 +26,9 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-open_stream([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd], Timeout) ->
+open_stream([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd]) ->
     Client = edis_db:process(0),
-    edcp_consumer_sup:start([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd], Timeout, #consumer_state{
+    edcp_consumer_sup:start([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd], #consumer_state{
         edis_client = Client, seq_num = SeqNoStart - 1
     }).
 
@@ -68,6 +68,9 @@ stream_snapshot(SnapshotStart, SeqEnd, File) when SeqEnd >= SnapshotStart ->
 
 stream_end(_File) ->
     ok.
+
+stream_info(_Info, ModState) ->
+    {ok, ModState}.
 
 %%%===================================================================
 %%% edcp_consumer callbacks
