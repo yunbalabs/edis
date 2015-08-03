@@ -60,7 +60,12 @@ start_link() ->
   {ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term()} | ignore).
 init([]) ->
-  StartSeqNo = 1,
+  StartSeqNo = case read_log_position(1) of
+                 {ok, Position} ->
+                   Position;
+                 _ ->
+                   1
+               end,
   ProducerAddr = edis_config:get(dcp_producer_addr, ["127.0.0.1", 12121]),
   self() ! synchronize,
   {ok, #state{seqno = StartSeqNo, producer_addr = ProducerAddr}}.
@@ -94,6 +99,9 @@ handle_call(_Request, _From, State) ->
   {noreply, NewState :: #state{}} |
   {noreply, NewState :: #state{}, timeout() | hibernate} |
   {stop, Reason :: term(), NewState :: #state{}}).
+handle_cast({snapshot_marker, SnapshotStart}, State) ->
+  store_log_position(1, SnapshotStart),
+  {noreply, State};
 handle_cast({stream_error, SeqNo}, State) ->
   erlang:send_after(10000, self(), synchronize),
   {noreply, State#state{seqno = SeqNo + 1}};
@@ -163,3 +171,29 @@ start_synchronize(ProducerAddr, StartSeqNo) ->
     _ ->
       erlang:send_after(10000, self(), synchronize)
   end.
+
+read_log_position(VBucketUUID) ->
+  case ets:file2tab("log_position.dat") of
+    {ok, Tab} ->
+      Ret = case ets:lookup(Tab, VBucketUUID) of
+              [{_, Pos}] ->
+                {ok, Pos};
+              [] ->
+                {error, not_found}
+            end,
+      ets:delete(Tab),
+      Ret;
+    {error, Reason} ->
+      {error, Reason}
+  end.
+
+store_log_position(VBucketUUID, Position) ->
+  Tab2 = case ets:file2tab("log_position.dat") of
+           {ok, Tab} ->
+             Tab;
+           {error, _Reason} ->
+             ets:new(log_position_table, [])
+         end,
+  ets:insert(Tab2, {VBucketUUID, Position}),
+  ets:tab2file(Tab2, "log_position.dat"),
+  ets:delete(Tab2).

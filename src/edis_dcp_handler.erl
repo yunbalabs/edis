@@ -17,7 +17,7 @@
 -export([
     open_stream/2,
     stream_starting/3, stream_snapshot/3, stream_end/1, stream_info/2,
-    handle_snapshot_item/2, handle_stream_error/2, handle_stream_end/2]).
+    handle_snapshot_marker/3, handle_snapshot_item/2, handle_stream_error/2, handle_stream_end/2]).
 
 -compile([{parse_transform, lager_transform}]).
 
@@ -75,6 +75,10 @@ stream_info(_Info, ModState) ->
 %%%===================================================================
 %%% edcp_consumer callbacks
 %%%===================================================================
+handle_snapshot_marker(SnapshotStart, _SnapshotEnd, ModState) ->
+    gen_server:cast(edis_dcp_monitor, {snapshot_marker, SnapshotStart}),
+    {ok, ModState}.
+
 handle_snapshot_item({SeqNo, Log}, State = #consumer_state{edis_client = Client}) ->
     {SeqNo, EdisCmd} = edis_op_logger:make_command_from_op_log(Log),
     lager:debug("receive ~p", [EdisCmd]),
