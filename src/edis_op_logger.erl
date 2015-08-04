@@ -16,7 +16,7 @@
 -export([start_link/0,
     add_handler/0]).
 
--export([log_command/1, notify_synchronize/1]).
+-export([log_command/1, notify_synchronize/1, disable_transaction/1, enable_transaction/1]).
 
 -export([open_op_log_file_for_read/0,
     split_index_from_op_log_line/1
@@ -39,7 +39,8 @@
         op_log_file                                 ::term(),
         op_index                                    ::integer(),
         server_id       =   <<"default_server">>    ::binary(),
-        synchronize_pid = undefined                 ::pid()
+        synchronize_pid = undefined                 ::pid(),
+        transaction_filter_table                    ::term()
 }).
 
 %%%===================================================================
@@ -76,6 +77,12 @@ log_command(Command) ->
 
 notify_synchronize(Pid) ->
     gen_event:notify(?MODULE, {synchronize, Pid}).
+
+disable_transaction(Transaction) when is_binary(Transaction) ->
+    gen_event:notify(?MODULE, {insert_transaction, Transaction}).
+
+enable_transaction(Transaction) when is_binary(Transaction) ->
+    gen_event:notify(?MODULE, {remove_transaction, Transaction}).
 
 %%%===================================================================
 %%% gen_event callbacks
@@ -115,7 +122,9 @@ init([]) ->
 
     lager:debug("open log file [~p] start index [~p]", [?DEFAULT_OP_LOG_FILE_NAME, StartOpIndex]),
 
-    {ok, #state{op_index = StartOpIndex, op_log_file = OpLogFile, server_id = ServerId}}.
+    FilterTables = sets:new(),
+
+    {ok, #state{op_index = StartOpIndex, op_log_file = OpLogFile, server_id = ServerId, transaction_filter_table = FilterTables}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -132,35 +141,50 @@ init([]) ->
     {swap_handler, Args1 :: term(), NewState :: #state{},
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
-
-handle_event({oplog, Command = #edis_command{cmd = <<"QUIT">>}}, State) ->
-    {ok, State};
 handle_event({oplog, Command = #edis_command{}}, State = #state{
-    op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = undefined
+    op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = undefined, transaction_filter_table = FilterTable
 }) ->
-    OpIndex = LastOpIndex + 1,
-    BinOpLog = format_command_to_op_log(OpIndex, Command),
-    lager:debug("write OpIndex [~p]", [OpIndex]),
-    write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
-    {ok, State#state{op_index = OpIndex}};
-handle_event({oplog, Command = #edis_command{}}, State = #state{
-    op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = SyncPid
-}) ->
-    OpIndex = LastOpIndex + 1,
-    BinOpLog = format_command_to_op_log(OpIndex, Command),
-    lager:debug("write OpIndex [~p]", [OpIndex]),
-    write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
-
-    case is_process_alive(SyncPid) of
+    case enable_op_log(Command#edis_command.args, FilterTable) of
         true ->
-            edcp_producer:push_item(SyncPid, {OpIndex, binary:part(BinOpLog, {0, max(0, size(BinOpLog) - 1)})}),
+            OpIndex = LastOpIndex + 1,
+            BinOpLog = format_command_to_op_log(OpIndex, Command),
+            lager:debug("write OpIndex [~p]", [OpIndex]),
+            write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
             {ok, State#state{op_index = OpIndex}};
-        _ ->
-            {ok, State#state{op_index = OpIndex, synchronize_pid = undefined}}
+        false ->
+            {ok, State}
+    end;
+handle_event({oplog, Command = #edis_command{}}, State = #state{
+    op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = SyncPid, transaction_filter_table = FilterTable
+}) ->
+    case enable_op_log(Command#edis_command.args, FilterTable) of
+        true ->
+            OpIndex = LastOpIndex + 1,
+            BinOpLog = format_command_to_op_log(OpIndex, Command),
+            lager:debug("write OpIndex [~p]", [OpIndex]),
+            write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
+
+            case is_process_alive(SyncPid) of
+                true ->
+                    edcp_producer:push_item(SyncPid, {OpIndex, binary:part(BinOpLog, {0, max(0, size(BinOpLog) - 1)})}),
+                    {ok, State#state{op_index = OpIndex}};
+                _ ->
+                    {ok, State#state{op_index = OpIndex, synchronize_pid = undefined}}
+            end;
+        false ->
+            {ok, State}
     end;
 
 handle_event({synchronize, Pid}, State) ->
     {ok, State#state{synchronize_pid = Pid}};
+
+handle_event({insert_transaction, Transaction}, State = #state{transaction_filter_table = FilterTable}) ->
+    FilterTable2 = sets:add_element(Transaction, FilterTable),
+    {ok, State#state{transaction_filter_table = FilterTable2}};
+
+handle_event({remove_transaction, Transaction}, State = #state{transaction_filter_table = FilterTable}) ->
+    FilterTable2 = sets:del_element(Transaction, FilterTable),
+    {ok, State#state{transaction_filter_table = FilterTable2}};
 
 handle_event(_Event, State) ->
     {ok, State}.
@@ -400,3 +424,20 @@ read_last_line(Line, File) ->
             lager:error("read_last_line/2 failed with error [~p]", [Error]),
             {ok, Line}
     end.
+
+enable_op_log([], _TransactionFilterTable) ->
+    false;
+enable_op_log([Key | _Rest], TransactionFilterTable) ->
+    Transaction = case binary:split(Key, <<"-">>) of
+                      [_Head, T] ->
+                          T;
+                      [T] ->
+                          T
+                  end,
+    Transaction2 = case binary:split(Transaction, <<":">>) of
+                       [T2, _Tail] ->
+                           T2;
+                       [T2] ->
+                           T2
+                   end,
+    not(sets:is_element(Transaction2, TransactionFilterTable)).
