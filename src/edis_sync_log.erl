@@ -111,6 +111,9 @@ handle_cast(_Request, State) ->
     {noreply, NewState :: #state{}} |
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
+handle_info({op_log, {ServerId, Index, BinOpLog}}, State) ->
+
+    {noreply, State};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -150,7 +153,8 @@ code_change(_OldVsn, State, _Extra) ->
 
 format_command(_Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = Group, result_type
 = ResultType}) ->
-    iolist_to_binary([?OP_LOG_SEP, make_sure_binay(TimeStamp)
+    iolist_to_binary([
+        make_sure_binay(TimeStamp)
         , ?OP_LOG_SEP, make_sure_binay(Db)
         , ?OP_LOG_SEP, make_sure_binay(Cmd)
         , ?OP_LOG_SEP, make_sure_binay(Group)
