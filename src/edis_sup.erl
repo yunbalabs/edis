@@ -37,4 +37,6 @@ init([]) ->
                permanent, 1000, supervisor, [edis_pubsub_sup]},
   NodeSup = {edis_node_sup, {edis_node_sup, start_link, []},
                permanent, 1000, supervisor, [edis_node_sup]},
-  {ok, {{one_for_one, 5, 10}, [NodeSup, PubSubSup, DbSup, ClientSup, ListenerSup]}}.
+    SyncLogSup = {edis_sync_log_sup, {edis_sync_log_sup, start_link, []},
+        permanent, 1000, supervisor, [edis_sync_log_sup]},
+  {ok, {{one_for_one, 5, 10}, [NodeSup, PubSubSup, DbSup, ClientSup, ListenerSup, SyncLogSup]}}.

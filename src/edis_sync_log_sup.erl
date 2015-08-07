@@ -55,7 +55,7 @@ start_link() ->
     }} |
     ignore |
     {error, Reason :: term()}).
-init(Args) ->
+init([]) ->
     RestartStrategy = one_for_one,
     MaxRestarts = 1000,
     MaxSecondsBetweenRestarts = 3600,
@@ -66,7 +66,7 @@ init(Args) ->
     Shutdown = 2000,
     Type = worker,
 
-    AChild = {edis_sync_log, {edis_sync_log, start_link, Args},
+    AChild = {edis_sync_log, {edis_sync_log, start_link, []},
         Restart, Shutdown, Type, [edis_sync_log]},
 
     {ok, {SupFlags, [AChild]}}.

@@ -40,6 +40,7 @@
 
 %% Commands ========================================================================================
 -export([run/2, run/3]).
+-export([sync_command/5, sync_command/6]).
 
 %% =================================================================================================
 %% External functions
@@ -83,6 +84,10 @@ run(Db, Command, Timeout) ->
   end.
 
 %% @doc Executes Command in Db with some Timeout
+-spec sync_command(atom(), edis:command(), binary(), integer(), binary()) -> term().
+sync_command(Db, Command, ServerId, Index, SyncLog) ->
+    sync_command(Db, Command, ServerId, Index, SyncLog, ?DEFAULT_TIMEOUT).
+
 -spec sync_command(atom(), edis:command(), binary(), integer(), binary(), infinity | pos_integer()) -> term().
 sync_command(Db, Command, ServerId, Index, SyncLog, Timeout) ->
     lager:debug("CALL for ~p: ~p~n", [Db, Command]),

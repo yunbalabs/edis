@@ -13,7 +13,7 @@
 -include("edis.hrl").
 
 %% API
--export([start_link/1, format_command/1, make_command_from_op_log/1]).
+-export([start_link/0, format_command/1, make_command_from_op_log/1]).
 
 %% gen_server callbacks
 -export([init/1,
@@ -39,10 +39,10 @@
 %%
 %% @end
 %%--------------------------------------------------------------------
--spec(start_link(term()) ->
+-spec(start_link() ->
     {ok, Pid :: pid()} | ignore | {error, Reason :: term()}).
-start_link(Args) ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], Args).
+start_link() ->
+    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -63,6 +63,7 @@ start_link(Args) ->
     {ok, State :: #state{}} | {ok, State :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term()} | ignore).
 init([]) ->
+    esync_log:set_sync_receiver(edis_sync_log),
     {ok, #state{}}.
 
 %%--------------------------------------------------------------------
@@ -112,9 +113,15 @@ handle_cast(_Request, State) ->
     {noreply, NewState :: #state{}, timeout() | hibernate} |
     {stop, Reason :: term(), NewState :: #state{}}).
 handle_info({op_log, {ServerId, Index, BinOpLog}}, State) ->
-
+    try
+        Command = make_command_from_op_log(BinOpLog),
+        edis_db:sync_command(Command#edis_command.db, Command, ServerId, Index, BinOpLog)
+    catch E:T ->
+        lager:error("run sync command failed of Log [~p] with exception [~p:~p]", [BinOpLog, E, T])
+    end,
     {noreply, State};
 handle_info(_Info, State) ->
+    lager:info("handle unknown info [~p]", [_Info]),
     {noreply, State}.
 
 %%--------------------------------------------------------------------
