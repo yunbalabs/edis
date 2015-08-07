@@ -70,10 +70,10 @@ run(Db, Command, Timeout) ->
   lager:debug("CALL for ~p: ~p~n", [Db, Command]),
   try gen_server:call(Db, Command, Timeout) of
     ok ->
-        esync_log_op_logger:log_command(edis_sync_log:format_command(Command)),
+        esync_log:log_command(edis_sync_log:format_command(Command)),
         ok;
     {ok, Reply} ->
-        esync_log_op_logger:log_command(edis_sync_log:format_command(Command)),
+        esync_log:log_command(edis_sync_log:format_command(Command)),
         Reply;
     {error, Error} ->
       lager:alert("Error trying ~p on ~p:~n\t~p~n", [Command, Db, Error]),
@@ -93,10 +93,10 @@ sync_command(Db, Command, ServerId, Index, SyncLog, Timeout) ->
     lager:debug("CALL for ~p: ~p~n", [Db, Command]),
     try gen_server:call(Db, Command, Timeout) of
         ok ->
-            esync_log_op_logger:log_sync_command(ServerId, Index, SyncLog),
+            esync_log:log_sync_command(ServerId, Index, SyncLog),
             ok;
         {ok, Reply} ->
-            esync_log_op_logger:log_sync_command(ServerId, Index, SyncLog),
+            esync_log:log_sync_command(ServerId, Index, SyncLog),
             Reply;
         {error, Error} ->
             lager:alert("Error trying ~p on ~p:~n\t~p~n", [Command, Db, Error]),
