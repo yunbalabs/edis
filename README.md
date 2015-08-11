@@ -44,3 +44,12 @@ edis is licensed by Electronic Inaka, LLC under the Apache 2.0 license; see the 
 
 ## Issue
 * [compile error](https://github.com/inaka/edis/issues/44)
+
+
+## Benchmarking
+### Operation: sadd
+### Origin
+!()[benchmarking_ori.png]
+
+### Synchronize
+!()[benchmarking.png]
