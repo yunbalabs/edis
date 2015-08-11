@@ -49,7 +49,7 @@ edis is licensed by Electronic Inaka, LLC under the Apache 2.0 license; see the 
 ## Benchmarking
 ### Operation: sadd
 ### Origin
-!()[benchmarking_ori.png]
+![](benchmarking_ori.png)
 
 ### Synchronize
-!()[benchmarking.png]
+![](benchmarking.png)
