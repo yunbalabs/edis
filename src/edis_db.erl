@@ -40,6 +40,7 @@
 
 %% Commands ========================================================================================
 -export([run/2, run/3]).
+-export([sync_command/5, sync_command/6]).
 
 %% =================================================================================================
 %% External functions
@@ -68,8 +69,12 @@ run(Db, Command) ->
 run(Db, Command, Timeout) ->
   lager:debug("CALL for ~p: ~p~n", [Db, Command]),
   try gen_server:call(Db, Command, Timeout) of
-    ok -> ok;
-    {ok, Reply} -> Reply;
+    ok ->
+        ok = edis_op_logger:log_command(Command),
+        ok;
+    {ok, Reply} ->
+        ok = edis_op_logger:log_command(Command),
+        Reply;
     {error, Error} ->
       lager:alert("Error trying ~p on ~p:~n\t~p~n", [Command, Db, Error]),
       throw(Error)
@@ -77,6 +82,29 @@ run(Db, Command, Timeout) ->
     _:{timeout, _} ->
       throw(timeout)
   end.
+
+%% @doc Executes Command in Db with some Timeout
+-spec sync_command(atom(), edis:command(), binary(), integer(), binary()) -> term().
+sync_command(Db, Command, ServerId, Index, SyncLog) ->
+    sync_command(Db, Command, ServerId, Index, SyncLog, ?DEFAULT_TIMEOUT).
+
+-spec sync_command(atom(), edis:command(), binary(), integer(), binary(), infinity | pos_integer()) -> term().
+sync_command(Db, Command, ServerId, Index, SyncLog, Timeout) ->
+    lager:debug("CALL for ~p: ~p~n", [Db, Command]),
+    try gen_server:call(Db, Command, Timeout) of
+        ok ->
+            esync_log:log_sync_command(ServerId, Index, SyncLog),
+            ok;
+        {ok, Reply} ->
+            esync_log:log_sync_command(ServerId, Index, SyncLog),
+            Reply;
+        {error, Error} ->
+            lager:alert("Error trying ~p on ~p:~n\t~p~n", [Command, Db, Error]),
+            throw(Error)
+    catch
+        _:{timeout, _} ->
+            throw(timeout)
+    end.
 
 %% =================================================================================================
 %% Server functions

@@ -146,11 +146,8 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{
 }) ->
     case enable_op_log(Command#edis_command.args, FilterTable) of
         true ->
-            OpIndex = LastOpIndex + 1,
-            BinOpLog = format_command_to_op_log(OpIndex, Command),
-            lager:debug("write OpIndex [~p]", [OpIndex]),
-            write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
-            {ok, State#state{op_index = OpIndex}};
+            esync_log:log_command(edis_sync_log:format_command(Command)),
+            {ok, State};
         false ->
             {ok, State}
     end;
@@ -160,16 +157,13 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{
     case enable_op_log(Command#edis_command.args, FilterTable) of
         true ->
             OpIndex = LastOpIndex + 1,
-            BinOpLog = format_command_to_op_log(OpIndex, Command),
-            lager:debug("write OpIndex [~p]", [OpIndex]),
-            write_bin_log_to_op_log_file(OpLogFile, BinOpLog),
+            esync_log:log_command(edis_sync_log:format_command(Command)),
 
             case is_process_alive(SyncPid) of
                 true ->
-                    edcp_producer:push_item(SyncPid, {OpIndex, binary:part(BinOpLog, {0, max(0, size(BinOpLog) - 1)})}),
-                    {ok, State#state{op_index = OpIndex}};
+                    {ok, State};
                 _ ->
-                    {ok, State#state{op_index = OpIndex, synchronize_pid = undefined}}
+                    {ok, State#state{synchronize_pid = undefined}}
             end;
         false ->
             {ok, State}

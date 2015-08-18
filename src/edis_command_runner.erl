@@ -91,7 +91,6 @@ handle_cast({run, Cmd, Args}, State) ->
                                     args = Args},
     Command = parse_command(OriginalCommand),
     ok = edis_db_monitor:notify(OriginalCommand),
-      ok = edis_op_logger:log_command(OriginalCommand),
     case {State#state.multi_queue, State#state.subscriptions} of
       {undefined, undefined} -> run(Command, State);
       {undefined, _InPubSub} -> pubsub(Command, State);

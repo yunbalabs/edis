@@ -28,20 +28,21 @@
 %% @doc Entry point for escript
 -spec main([string()]) -> ok.
 main(Args) ->
-  case Args of
-    [] -> ok;
-    [ConfigFile] -> edis_util:load_config(ConfigFile)
-  end,
-  crypto:start(),
-  ok = application:start(lager),
-  ok = start(),
-  Pid = erlang:whereis(edis_sup),
-  Ref = erlang:monitor(process, Pid),
-  receive
-    {'DOWN',Ref,process,Pid,shutdown} -> halt(0);
-    {'DOWN',Ref,process,Pid,Reason} -> error_logger:error_msg("System down: ~p~n", [Reason]), halt(1);
-    Error -> error_logger:error_msg("Unexpected message: ~p~n", [Error]), halt(-1)
-  end.
+    case Args of
+        [] -> ok;
+        [ConfigFile] -> edis_util:load_config(ConfigFile)
+    end,
+    crypto:start(),
+    ok = application:start(lager),
+    ok = application:start(esync_log),
+    ok = start(),
+    Pid = erlang:whereis(edis_sup),
+    Ref = erlang:monitor(process, Pid),
+    receive
+        {'DOWN',Ref,process,Pid,shutdown} -> halt(0);
+        {'DOWN',Ref,process,Pid,Reason} -> error_logger:error_msg("System down: ~p~n", [Reason]), halt(1);
+        Error -> error_logger:error_msg("Unexpected message: ~p~n", [Error]), halt(-1)
+    end.
 
 %%-------------------------------------------------------------------
 %% ADMIN API
@@ -60,7 +61,7 @@ stop() -> application:stop(?MODULE).
 %% @private
 -spec start(any(), any()) -> {ok, pid()}.
 start(_StartType, _StartArgs) ->
-  start_cowboy(),
+  %% start_cowboy(),
   edis_sup:start_link().
 
 %% @private

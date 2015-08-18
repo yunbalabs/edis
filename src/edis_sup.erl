@@ -39,4 +39,6 @@ init([]) ->
                permanent, 1000, supervisor, [edis_node_sup]},
   DcpMonitor = {edis_dcp_monitor, {edis_dcp_monitor, start_link, []},
                permanent, 1000, worker, [edis_dcp_monitor]},
-  {ok, {{one_for_one, 5, 10}, [NodeSup, PubSubSup, DbSup, ClientSup, ListenerSup, DcpMonitor]}}.
+  SyncLogSup = {edis_sync_log_sup, {edis_sync_log_sup, start_link, []},
+    permanent, 1000, supervisor, [edis_sync_log_sup]},
+  {ok, {{one_for_one, 5, 10}, [NodeSup, PubSubSup, DbSup, ClientSup, ListenerSup, DcpMonitor, SyncLogSup]}}.

@@ -33,6 +33,10 @@ _SYNC_, _SLOWLOG_, _SLAVEOF_, _DEBUG *_
 ### License
 edis is licensed by Electronic Inaka, LLC under the Apache 2.0 license; see the LICENSE file in this repository.
 
+### Synchronize log
+`esync_log:start_sync("$sync_host$", 8766).`
+bidirectional synchronization is supported, run upper command on the peer edis with corresponding sync_host arguments
+
 ### TODO
 
 * Backends
