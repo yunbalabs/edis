@@ -163,6 +163,15 @@ code_change(_OldVsn, State, _Extra) ->
 
 format_command(_Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = Group, result_type
 = ResultType}) ->
+    case Cmd of
+        <<"SADD">> when length(Args)>1 ->
+            TruncTimestamp = trunc(TimeStamp),
+            Key = lists:seq(Args, 1),
+            {_, Elements} = lists:split(Args, 1),
+            lists:map(
+                fun(E) ->
+
+    end,
     iolist_to_binary([
         make_sure_binay(TimeStamp)
         , ?OP_LOG_SEP, make_sure_binay(Db)
