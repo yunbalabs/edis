@@ -142,31 +142,19 @@ init([]) ->
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
 handle_event({oplog, Command = #edis_command{}}, State = #state{
-    op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = undefined, transaction_filter_table = FilterTable
-}) ->
-    case enable_op_log(Command#edis_command.args, FilterTable) of
-        true ->
-            esync_log:log_command(edis_sync_log:format_command(Command)),
-            {ok, State};
-        false ->
-            {ok, State}
-    end;
-handle_event({oplog, Command = #edis_command{}}, State = #state{
     op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = SyncPid, transaction_filter_table = FilterTable
 }) ->
-    case enable_op_log(Command#edis_command.args, FilterTable) of
+    case edis_sync_log:format_command(Command) of
+        {ok, FormatCommand} ->
+            esync_log:log_command(FormatCommand);
+        none ->
+            ok
+    end,
+    case is_process_alive(SyncPid) of
         true ->
-            OpIndex = LastOpIndex + 1,
-            esync_log:log_command(edis_sync_log:format_command(Command)),
-
-            case is_process_alive(SyncPid) of
-                true ->
-                    {ok, State};
-                _ ->
-                    {ok, State#state{synchronize_pid = undefined}}
-            end;
-        false ->
-            {ok, State}
+            {ok, State};
+        _ ->
+            {ok, State#state{synchronize_pid = undefined}}
     end;
 
 handle_event({synchronize, Pid}, State) ->

@@ -11,6 +11,7 @@
 
 -behaviour(gen_server).
 -include("edis.hrl").
+-include("esync_log.hrl").
 
 %% API
 -export([start_link/0, format_command/1, make_command_from_op_log/1]).
@@ -161,25 +162,21 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-format_command(_Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = Group, result_type
-= ResultType}) ->
+format_command(_Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = _Group, result_type
+= _ResultType}) ->
     case Cmd of
         <<"SADD">> when length(Args)>1 ->
-            TruncTimestamp = trunc(TimeStamp),
-            Key = lists:seq(Args, 1),
-            {_, Elements} = lists:split(Args, 1),
-            lists:map(
-                fun(E) ->
-
-    end,
-    iolist_to_binary([
-        make_sure_binay(TimeStamp)
-        , ?OP_LOG_SEP, make_sure_binay(Db)
-        , ?OP_LOG_SEP, make_sure_binay(Cmd)
-        , ?OP_LOG_SEP, make_sure_binay(Group)
-        , ?OP_LOG_SEP, make_sure_binay(ResultType)
-    ] ++ lists:map(fun(E) -> iolist_to_binary([?OP_LOG_SEP, make_sure_binay(E)]) end, Args)
-).
+            {[Key], Elements} = lists:split(Args, 1),
+            {ok, #esync_command{element_op = sadd, db = Db, key = Key, elements = Elements}};
+        <<"SREM">> when length(Args)>1 ->
+            {[Key], Elements} = lists:split(Args, 1),
+            {ok, #esync_command{element_op = srem, db = Db, key = Key, elements = Elements}};
+        <<"EXPIRE">> when length(Args)==2 ->
+            {[Key], [Expire]} = lists:split(Args, 1),
+            {ok, #esync_command{element_op = srem, db = Db, key = Key, elements = [Expire]}};
+        _ -> none
+    end
+.
 
 make_command_from_op_log(BinOpLog) ->
     [BinTimeStamp, Bin2] = binary:split(BinOpLog, ?OP_LOG_SEP),
