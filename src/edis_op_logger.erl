@@ -18,13 +18,6 @@
 
 -export([log_command/1, notify_synchronize/1, disable_transaction/1, enable_transaction/1]).
 
--export([open_op_log_file_for_read/0,
-    split_index_from_op_log_line/1
-]).
-
--export([format_command_to_op_log/2,
-    make_command_from_op_log/1]).
-
 %% gen_event callbacks
 -export([init/1,
     handle_event/2,
@@ -35,14 +28,25 @@
 
 -define(SERVER, ?MODULE).
 
+-define(DEFAULT_SERVER_ID, 0).
+-define(OP_LOG_SEP, <<"\\">>).
+
 -record(state, {
-        op_log_file                                 ::term(),
-        op_index                                    ::integer(),
-        server_id       =   <<"default_server">>    ::binary(),
+        server_id       =   ?DEFAULT_SERVER_ID      ::integer(),
         synchronize_pid = undefined                 ::pid(),
-        transaction_filter_table                    ::term()
+        transaction_filter_table                    ::term(),
+        db_client                                   ::pid()
 }).
 
+-type esync_element_op() :: sadd | srem | expire.
+-record(esync_command, {
+    timestamp       :: float(),
+    element_op      :: esync_element_op(),
+    db = 0          :: non_neg_integer(),
+    key = <<>>      :: binary(),
+    element         :: term(),
+    cvs             :: binary()
+}).
 %%%===================================================================
 %%% gen_event callbacks
 %%%===================================================================
@@ -101,30 +105,17 @@ enable_transaction(Transaction) when is_binary(Transaction) ->
     {ok, State :: #state{}, hibernate} |
     {error, Reason :: term()}).
 
--define(DEFAULT_LOG_IDX_FILE, "oplog/op_log.idx").
--define(DEFAULT_START_OP_LOG_FILE_INDEX, 0).
--define(DEFAULT_SERVER_ID, "server1").
--define(DEFAULT_OP_COUNT_PER_LOG_FILE, 1000000).
-
--define(DEFAULT_OP_LOG_FILE_NAME, "oplog/op_log.log").
--define(OP_LOG_SEP, <<"\\">>).
--define(DEFAULT_OP_LOG_START_INDEX, 0).
-
 init([]) ->
-    %% get start op log index from file
-    StartOpIndex = get_last_op_log_index(),
-
     %% get server id
     ServerId = ?DEFAULT_SERVER_ID,
 
-    %% open log file to write op in
-    OpLogFile = open_op_log_file_for_write(),
-
-    lager:debug("open log file [~p] start index [~p]", [?DEFAULT_OP_LOG_FILE_NAME, StartOpIndex]),
+    %% set self as sync receiver & get a client to store/query VC
+    esync_log:set_sync_receiver(edis_sync_log),
+    DbClient = edis_db:process(0),
 
     FilterTables = sets:new(),
 
-    {ok, #state{op_index = StartOpIndex, op_log_file = OpLogFile, server_id = ServerId, transaction_filter_table = FilterTables}}.
+    {ok, #state{server_id = ServerId, transaction_filter_table = FilterTables, db_client = DbClient}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -142,11 +133,15 @@ init([]) ->
         Handler2 :: (atom() | {atom(), Id :: term()}), Args2 :: term()} |
     remove_handler).
 handle_event({oplog, Command = #edis_command{}}, State = #state{
-    op_log_file = OpLogFile, op_index = LastOpIndex, synchronize_pid = SyncPid, transaction_filter_table = FilterTable
-}) ->
-    case edis_sync_log:format_command(Command) of
-        {ok, FormatCommand} ->
-            esync_log:log_command(FormatCommand);
+    server_id = ServerId, db_client = DbClient, synchronize_pid = SyncPid}) ->
+    case format_command(Command) of
+        {ok, FormatCommand, Elements} ->
+            BinLogs = lists:map(
+                fun (Element) ->
+                    CvsCommand = get_cvs(DbClient, ServerId, FormatCommand#esync_command{element = Element}),
+                    make_bin_log_from_format_command(CvsCommand)
+                end, Elements),
+            esync_log:log_command(BinLogs);
         none ->
             ok
     end,
@@ -221,8 +216,7 @@ handle_info(_Info, State) ->
 -spec(terminate(Args :: (term() | {stop, Reason :: term()} | stop |
 remove_handler | {error, {'EXIT', Reason :: term()}} |
 {error, term()}), State :: term()) -> term()).
-terminate(_Arg, _State = #state{op_log_file = OpLogFile}) ->
-    close_op_log_file(OpLogFile),
+terminate(_Arg, _State = #state{}) ->
     ok.
 
 %%--------------------------------------------------------------------
@@ -241,18 +235,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-
-format_command_to_op_log(OpIndex, _Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = Group, result_type = ResultType}) ->
-    iolist_to_binary([make_sure_binay(OpIndex)
-        , ?OP_LOG_SEP, make_sure_binay(trunc(TimeStamp))
-        , ?OP_LOG_SEP, make_sure_binay(Db)
-        , ?OP_LOG_SEP, make_sure_binay(Cmd)
-        , ?OP_LOG_SEP, make_sure_binay(Group)
-        , ?OP_LOG_SEP, make_sure_binay(ResultType)
-        ] ++ lists:map(fun(E) -> iolist_to_binary([?OP_LOG_SEP, make_sure_binay(E)]) end, Args)
-        ++ "\n"
-    ).
-
 make_command_from_op_log(BinOpLog) ->
     [BinOpIndex, Bin1] = binary:split(BinOpLog, ?OP_LOG_SEP),
     [BinTimeStamp, Bin2] = binary:split(Bin1, ?OP_LOG_SEP),
@@ -277,8 +259,6 @@ make_command_from_op_log(BinOpLog) ->
             args = Args
     }}.
 
-
-
 make_sure_binay(Data) ->
     if
         is_integer(Data) ->
@@ -293,133 +273,62 @@ make_sure_binay(Data) ->
             Data
     end.
 
-open_op_log_file_for_write() ->
-    FileName = ?DEFAULT_OP_LOG_FILE_NAME,
-    case file:open(FileName, [raw, write, append, binary]) of
-        {ok, File} -> File;
-        Error ->
-            lager:error("open op log file [~p] failed [~P]", [FileName, Error]),
-            none
-    end.
-
--spec(open_op_log_file_for_read() -> none | term()). 
-open_op_log_file_for_read() ->
-    FileName = ?DEFAULT_OP_LOG_FILE_NAME,
-    case file:open(FileName, [read, binary]) of
-        {ok, File} -> File;
-        {error, enoent} ->
-            lager:info("no op log idx file found, deault to index 0", []),
-            none;
-        Error ->
-            lager:error("open op log file [~p] failed [~P]", [FileName, Error]),
-            none
-    end.
-
-write_bin_log_to_op_log_file(File, BinLog) ->
-    case File of
-        none -> lager:info("no op log file to write op [~p]", [BinLog]);
-        _ -> file:write(File, BinLog)
-    end.
-
-close_op_log_file(File) ->
-    file:close(File).
-
-get_last_op_log_index() ->
-%    OpLogFileIndex =
-%        case file:read_file(?DEFAULT_LOG_IDX_FILE) of
-%            {ok, File} ->
-%                try
-%                    erlang:binary_to_integer(File)
-%                catch E:T ->
-%                    lager:error("binary to integer [~p] failed of [~p:~p]", [File, E, T]),
-%                    ?DEFAULT_START_OP_LOG_FILE_INDEX
-%                end;
-%            {error, enoent} ->
-%                lager:info("no op log idx file found, deault to index 0", []),
-%                ?DEFAULT_START_OP_LOG_FILE_INDEX;
-%            Error ->
-%                lager:info("read log idx file failed with error [~p]", [Error]),
-%                ?DEFAULT_START_OP_LOG_FILE_INDEX
-%        end,
-
-    %% read to get current op log index first
-    case open_op_log_file_for_read() of
-        none ->
-            lager:error("read log idx file failed", []),
-            ?DEFAULT_OP_LOG_START_INDEX;
-        File ->
-            LastLine = read_last_line(File),
-            file:close(File),
-            case LastLine of
-                {ok, BinLastLine} ->
-                    lager:debug("get last line from current log succ: [~p]", [LastLine]),
-                    split_index_from_op_log_line(BinLastLine);
-                Error ->
-                    lager:error("try to read last log op line failed [~p]", [Error]),
-                    ?DEFAULT_OP_LOG_START_INDEX
-            end
-    end.
-
-split_index_from_op_log_line(BinLastLine) ->
-    case binary:split(BinLastLine, ?OP_LOG_SEP) of
-        [BinIndex, _Rest] ->
-            try
-                erlang:binary_to_integer(BinIndex)
-            catch E:T ->
-                lager:error("index binary_to_integer [~p] failed [~p:~p]", [BinIndex, E, T]),
-                ?DEFAULT_OP_LOG_START_INDEX
-            end;
+format_command(_Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = _Group, result_type
+= _ResultType}) ->
+    case Cmd of
+        <<"SADD">> when length(Args)>1 ->
+            {[Key], Elements} = lists:split(Args, 1),
+            {ok, #esync_command{timestamp = TimeStamp, element_op = sadd, db = Db, key = Key}, Elements};
+        <<"SREM">> when length(Args)>1 ->
+            {[Key], Elements} = lists:split(Args, 1),
+            {ok, #esync_command{timestamp = TimeStamp, element_op = srem, db = Db, key = Key}, Elements};
+        <<"EXPIRE">> when length(Args)==2 ->
+            {[Key], [Expire]} = lists:split(Args, 1),
+            {ok, #esync_command{timestamp = TimeStamp, element_op = srem, db = Db, key = Key}, [Expire]};
         _ ->
-            lager:info("get an illegal op log line [~p], set to default index", [BinLastLine]),
-            ?DEFAULT_OP_LOG_START_INDEX
+            lager:debug("not logged command ~p", [Cmd]),
+            none
     end.
 
--spec(read_last_line(term()) -> {ok, binary()} | {error, atom()}).  %% just as file:read_line
-read_last_line(File) ->
-    read_last_line(<<"">>, File).
+-define(CVS_BIT_SIZE, 15).
+-define(DEFAULT_CVS, <<0:?CVS_BIT_SIZE>>).
 
-%read_last_line(File, Number) ->
-%    case file:pread(File, {eof, Number}, Number) of
-%        {ok, Data} ->
-%            Lines = binary:split(Data, <<"\n">>, [global]),
-%            case length(Lines) of
-%                N when N>=3 ->
-%                    {ok, lists:nth(N-1, Lines)};
-%                _ ->
-%                    read_last_line(File, Number*2)
-%            end;
-%        {error, eof} -> file:read_line(File);
-%        eof -> file:read_line(File);
-%        Error ->
-%            lager:error("read_last_line/2 failed with error [~p]", [Error]),
-%            {ok, <<"">>}
-%    end.
+get_cvs(DbClient, ServerId, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}) ->
+    CvsKey = lists:concat([Key, "_", Element]),
+    OldCvsCommand = #edis_command{
+        timestamp = Timestamp,
+        cmd = <<"GET">>,
+        db = Db,
+        args = [CvsKey],
+        group = keys,
+        result_type = number,
+        timeout = undefined,
+        expire = undefined
+    },
+    OldCvs =
+        try
+            edis_db:run_no_oplog(DbClient, OldCvsCommand)
+        catch E:T ->
+            lager:error("get old cvs failed for Cvskey ~p ~p:~p", [CvsKey, E ,T]),
+            ?DEFAULT_CVS
+        end,
+    KeptCvsBitSize = ?CVS_BIT_SIZE-1,
+    <<_:1, OldKeptCvs:KeptCvsBitSize>> = OldCvs,
+    NewCvs = case Op of
+                 sadd -> <<1:1, OldKeptCvs:KeptCvsBitSize>>;
+                 srem -> <<1:0, OldCvs:KeptCvsBitSize>>;
+                 _ -> <<1:1, OldKeptCvs:KeptCvsBitSize>>
+             end,
+    ElementCommand#esync_command{cvs = NewCvs}.
 
-
-read_last_line(Line, File) ->
-    case file:read_line(File) of
-        {ok, Data} ->
-            read_last_line(Data, File);
-        {error, eof} -> {ok, Line};
-        eof -> {ok, Line};
-        Error ->
-            lager:error("read_last_line/2 failed with error [~p]", [Error]),
-            {ok, Line}
-    end.
-
-enable_op_log([], _TransactionFilterTable) ->
-    false;
-enable_op_log([Key | _Rest], TransactionFilterTable) ->
-    Transaction = case binary:split(Key, <<"-">>) of
-                      [_Head, T] ->
-                          T;
-                      [T] ->
-                          T
-                  end,
-    Transaction2 = case binary:split(Transaction, <<":">>) of
-                       [T2, _Tail] ->
-                           T2;
-                       [T2] ->
-                           T2
-                   end,
-    not(sets:is_element(Transaction2, TransactionFilterTable)).
+-define(SEP, <<"\\">>).
+make_bin_log_from_format_command(_CvsCommand = #esync_command{timestamp = Timestamp, element_op = Op, db = Db, key = Key, element = Element, cvs = Cvs}) ->
+    TruncTimestamp = trunc(Timestamp),
+    iolist_to_binary([
+        make_sure_binay(TruncTimestamp)
+        , ?SEP, make_sure_binay(Db)
+        , ?SEP, make_sure_binay(Key)
+        , ?SEP, make_sure_binay(Element)
+        , ?SEP, make_sure_binay(Cvs)
+        , ?SEP, make_sure_binay(Timestamp)
+    ]).
