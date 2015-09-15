@@ -16,7 +16,7 @@
 -export([start_link/0,
     add_handler/0]).
 
--export([log_command/1, notify_synchronize/1, disable_transaction/1, enable_transaction/1]).
+-export([log_command/1, sync_log/1, notify_synchronize/1, disable_transaction/1, enable_transaction/1]).
 
 %% gen_event callbacks
 -export([init/1,
@@ -79,6 +79,10 @@ add_handler() ->
 log_command(Command) ->
     gen_event:notify(?MODULE, {oplog, Command}).
 
+-spec sync_log(OpLog :: binary()) -> ok.
+sync_log(OpLog) ->
+    gen_event:notify(?MODULE, {synclog, OpLog}).
+
 notify_synchronize(Pid) ->
     gen_event:notify(?MODULE, {synchronize, Pid}).
 
@@ -138,8 +142,10 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{
         {ok, FormatCommand, Elements} ->
             BinLogs = lists:map(
                 fun (Element) ->
-                    CvsCommand = get_cvs(DbClient, ServerId, FormatCommand#esync_command{element = Element}),
-                    make_bin_log_from_format_command(CvsCommand)
+                    ElementCommand = FormatCommand#esync_command{element = Element},
+                    NewCvs = get_cvs(DbClient, ElementCommand),
+                    store_local_cvs(DbClient, ElementCommand),
+                    make_bin_log_from_format_command(ElementCommand#esync_command{cvs = NewCvs})
                 end, Elements),
             esync_log:log_command(BinLogs);
         none ->
@@ -151,7 +157,19 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{
         _ ->
             {ok, State#state{synchronize_pid = undefined}}
     end;
-
+handle_event({synclog, OpLog}, State = #state{
+    server_id = ServerId, db_client = DbClient, synchronize_pid = SyncPid}) ->
+    case format_log(OpLog) of
+        {ok, RemoteCommand} ->
+            LocalCvs = get_cvs(DbClient, RemoteCommand),
+            LocalTime = get_timestamp(DbClient, RemoteCommand),
+            MergeCommand = merge_command(RemoteCommand, LocalCvs, LocalTime),
+            store_local_cvs(MergeCommand),
+            EdisCommand = make_edis_command_by_format_command(MergeCommand),
+            edis_db:run_no_oplog(DbClient, EdisCommand);
+        Error ->
+            lager:error("format log to command failed ~p", [Error])
+    end
 handle_event({synchronize, Pid}, State) ->
     {ok, State#state{synchronize_pid = Pid}};
 
@@ -293,8 +311,8 @@ format_command(_Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cm
 -define(CVS_BIT_SIZE, 15).
 -define(DEFAULT_CVS, <<0:?CVS_BIT_SIZE>>).
 
-get_cvs(DbClient, ServerId, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}) ->
-    CvsKey = lists:concat([Key, "_", Element]),
+get_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}) ->
+    CvsKey = lists:concat(["cvs_", Key, "_", Element]),
     OldCvsCommand = #edis_command{
         timestamp = Timestamp,
         cmd = <<"GET">>,
@@ -309,9 +327,12 @@ get_cvs(DbClient, ServerId, ElementCommand = #esync_command{timestamp = Timestam
         try
             edis_db:run_no_oplog(DbClient, OldCvsCommand)
         catch E:T ->
-            lager:error("get old cvs failed for Cvskey ~p ~p:~p", [CvsKey, E ,T]),
+            lager:error("get old cvs failed for CvsKey ~p ~p:~p", [CvsKey, E ,T]),
             ?DEFAULT_CVS
         end,
+    OldCvs.
+
+merge_op_to_cvs(ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}, OldCvs) ->
     KeptCvsBitSize = ?CVS_BIT_SIZE-1,
     <<_:1, OldKeptCvs:KeptCvsBitSize>> = OldCvs,
     NewCvs = case Op of
@@ -319,7 +340,53 @@ get_cvs(DbClient, ServerId, ElementCommand = #esync_command{timestamp = Timestam
                  srem -> <<1:0, OldCvs:KeptCvsBitSize>>;
                  _ -> <<1:1, OldKeptCvs:KeptCvsBitSize>>
              end,
-    ElementCommand#esync_command{cvs = NewCvs}.
+    NewCvs.
+
+get_timestamp(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}) ->
+    TimeKey = lists:concat(["time_", Key, "_", Element]),
+    OldCvsCommand = #edis_command{
+        timestamp = Timestamp,
+        cmd = <<"GET">>,
+        db = Db,
+        args = [TimeKey],
+        group = keys,
+        result_type = number,
+        timeout = undefined,
+        expire = undefined
+    },
+    OldTime =
+        try
+            edis_db:run_no_oplog(DbClient, OldCvsCommand)
+        catch E:T ->
+            lager:error("get old cvs failed for TimeKey ~p ~p:~p", [OldTime, E ,T]),
+            ?DEFAULT_CVS
+        end,
+    OldTime.
+
+store_local_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db, cvs = Cvs}) ->
+    CvsKey = lists:concat(["cvs_", Key, "_", Element]),
+    CvsArgs =  [CvsKey, Cvs],
+    TimeKey = lists:concat(["time_", Key, "_", Element]),
+    TimeArgs = [TimeKey, Timestamp],
+    CvsCommand = #edis_command{
+        timestamp = Timestamp,
+        cmd = <<"SET">>,
+        db = Db,
+        args = CvsArgs,
+        group = keys,
+        result_type = number,
+        timeout = undefined,
+        expire = undefined
+    },
+    OldTime =
+        try
+            edis_db:run_no_oplog(DbClient, CvsCommand#edis_command{args = CvsArgs}),
+            edis_db:run_no_oplog(DbClient, CvsCommand#edis_command{args = TimeArgs})
+        catch E:T ->
+            lager:error("get old cvs failed for Cvskey ~p ~p:~p", [CvsKey, E ,T]),
+            ?DEFAULT_CVS
+        end,
+    OldTime.
 
 -define(SEP, <<"\\">>).
 make_bin_log_from_format_command(_CvsCommand = #esync_command{timestamp = Timestamp, element_op = Op, db = Db, key = Key, element = Element, cvs = Cvs}) ->
@@ -332,3 +399,6 @@ make_bin_log_from_format_command(_CvsCommand = #esync_command{timestamp = Timest
         , ?SEP, make_sure_binay(Cvs)
         , ?SEP, make_sure_binay(Timestamp)
     ]).
+
+merge_command(RemoteCommand, LocalCvs, LocalTime) ->
+    
