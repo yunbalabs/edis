@@ -40,8 +40,8 @@ main(Args) ->
     Ref = erlang:monitor(process, Pid),
     receive
         {'DOWN',Ref,process,Pid,shutdown} -> halt(0);
-        {'DOWN',Ref,process,Pid,Reason} -> error_logger:error_msg("System down: ~p~n", [Reason]), halt(1);
-        Error -> error_logger:error_msg("Unexpected message: ~p~n", [Error]), halt(-1)
+        {'DOWN',Ref,process,Pid,Reason} -> lager:error("System down: ~p~n", [Reason]), halt(1);
+        Error -> lager:error("Unexpected message: ~p~n", [Error]), halt(-1)
     end.
 
 %%-------------------------------------------------------------------
@@ -67,16 +67,3 @@ start(_StartType, _StartArgs) ->
 %% @private
 -spec stop(any()) -> ok.
 stop(_State) -> ok.
-
-start_cowboy() ->
-  RestfulArgs = {},
-  Port = edis_config:get(cowboy_port, 8765),
-  Dispatch = cowboy_router:compile([
-    {'_', [
-      {"/rest/oplog/[...]", edis_rest_log_handler, [RestfulArgs]},
-      {"/config/[...]", edis_rest_config_handler, [RestfulArgs]}
-    ]}
-  ]),
-  {ok, _} = cowboy:start_http(http, 100, [{port, Port}], [
-    {env, [{dispatch, Dispatch}]}
-  ]).

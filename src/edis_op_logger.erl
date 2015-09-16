@@ -159,17 +159,31 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{
     end;
 handle_event({synclog, OpLog}, State = #state{
     server_id = ServerId, db_client = DbClient, synchronize_pid = SyncPid}) ->
-    case format_log(OpLog) of
+    case make_format_command_from_bin_log(OpLog) of
         {ok, RemoteCommand} ->
             LocalCvs = get_cvs(DbClient, RemoteCommand),
             LocalTime = get_timestamp(DbClient, RemoteCommand),
-            MergeCommand = merge_command(RemoteCommand, LocalCvs, LocalTime),
-            store_local_cvs(MergeCommand),
-            EdisCommand = make_edis_command_by_format_command(MergeCommand),
-            edis_db:run_no_oplog(DbClient, EdisCommand);
+            {UpdateInfo, UpdateData, MergeCommand} = merge_command(RemoteCommand, LocalCvs, LocalTime),
+            case UpdateInfo of
+                update ->
+                    store_local_cvs(DbClient, MergeCommand);
+                no ->
+                    lager:debug("keep local info")
+            end,
+            case UpdateData of
+                update ->
+                    case make_edis_command_by_format_command(MergeCommand) of
+                        {ok, EdisCommand} ->
+                            edis_db:run_no_oplog(DbClient, EdisCommand);
+                        Error ->
+                            lager:error("make edis command from format command failed, ~p", [Error])
+                    end;
+                no ->
+                    lager:debug("keep local data")
+            end;
         Error ->
             lager:error("format log to command failed ~p", [Error])
-    end
+    end;
 handle_event({synchronize, Pid}, State) ->
     {ok, State#state{synchronize_pid = Pid}};
 
@@ -253,30 +267,6 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-make_command_from_op_log(BinOpLog) ->
-    [BinOpIndex, Bin1] = binary:split(BinOpLog, ?OP_LOG_SEP),
-    [BinTimeStamp, Bin2] = binary:split(Bin1, ?OP_LOG_SEP),
-    [BinDb, Bin3] = binary:split(Bin2, ?OP_LOG_SEP),
-    [BinCmd, Bin4] = binary:split(Bin3, ?OP_LOG_SEP),
-    [BinGroup, Bin5] = binary:split(Bin4, ?OP_LOG_SEP),
-    {BinResultType, Args} = case binary:split(Bin5, ?OP_LOG_SEP) of
-                                [BinResultType2, Bin6] ->
-                                    Args2 = binary:split(Bin6, ?OP_LOG_SEP, [global]),
-                                    {BinResultType2, Args2};
-                                [BinResultType2] ->
-                                    {BinResultType2, []}
-                            end,
-
-    {binary_to_integer(BinOpIndex),
-        #edis_command{
-            timestamp = binary_to_integer(BinTimeStamp) + 0.0,
-            db = binary_to_integer(BinDb),
-            cmd = BinCmd,
-            group = binary_to_atom(BinGroup, latin1),
-            result_type = binary_to_atom(BinResultType, latin1),
-            args = Args
-    }}.
-
 make_sure_binay(Data) ->
     if
         is_integer(Data) ->
@@ -289,23 +279,6 @@ make_sure_binay(Data) ->
             float_to_binary(Data);
         true ->
             Data
-    end.
-
-format_command(_Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = _Group, result_type
-= _ResultType}) ->
-    case Cmd of
-        <<"SADD">> when length(Args)>1 ->
-            {[Key], Elements} = lists:split(Args, 1),
-            {ok, #esync_command{timestamp = TimeStamp, element_op = sadd, db = Db, key = Key}, Elements};
-        <<"SREM">> when length(Args)>1 ->
-            {[Key], Elements} = lists:split(Args, 1),
-            {ok, #esync_command{timestamp = TimeStamp, element_op = srem, db = Db, key = Key}, Elements};
-        <<"EXPIRE">> when length(Args)==2 ->
-            {[Key], [Expire]} = lists:split(Args, 1),
-            {ok, #esync_command{timestamp = TimeStamp, element_op = srem, db = Db, key = Key}, [Expire]};
-        _ ->
-            lager:debug("not logged command ~p", [Cmd]),
-            none
     end.
 
 -define(CVS_BIT_SIZE, 15).
@@ -358,7 +331,7 @@ get_timestamp(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, k
         try
             edis_db:run_no_oplog(DbClient, OldCvsCommand)
         catch E:T ->
-            lager:error("get old cvs failed for TimeKey ~p ~p:~p", [OldTime, E ,T]),
+            lager:error("get old cvs failed for TimeKey ~p ~p:~p", [TimeKey, E ,T]),
             ?DEFAULT_CVS
         end,
     OldTime.
@@ -396,9 +369,80 @@ make_bin_log_from_format_command(_CvsCommand = #esync_command{timestamp = Timest
         , ?SEP, make_sure_binay(Db)
         , ?SEP, make_sure_binay(Key)
         , ?SEP, make_sure_binay(Element)
+        , ?SEP, make_sure_binay(Op)
         , ?SEP, make_sure_binay(Cvs)
         , ?SEP, make_sure_binay(Timestamp)
     ]).
 
-merge_command(RemoteCommand, LocalCvs, LocalTime) ->
-    
+make_format_command_from_bin_log(BinOpLog) ->
+    [_BinTruncTimestamp, Bin1] = binary:split(BinOpLog, ?OP_LOG_SEP),
+    [BinDb, Bin2] = binary:split(Bin1, ?OP_LOG_SEP),
+    [BinKey, Bin3] = binary:split(Bin2, ?OP_LOG_SEP),
+    [BinElement, Bin4] = binary:split(Bin3, ?OP_LOG_SEP),
+    [BinOp, Bin5] = binary:split(Bin4, ?OP_LOG_SEP),
+    [BinCvs, Bin6] = binary:split(Bin5, ?OP_LOG_SEP),
+    [BinTimestamp, _Bin7] = binary:split(Bin6, ?OP_LOG_SEP),
+
+    Timestamp = binary_to_float(BinTimestamp),
+    Op = binary_to_atom(BinOp, latin1),
+    Db = binary_to_integer(BinDb),
+    Key = binary_to_list(BinKey),
+    Element = BinElement,
+    Cvs = BinCvs,
+    {ok, #esync_command{timestamp = Timestamp, element_op = Op, db = Db, key = Key, element = Element, cvs = Cvs}}.
+
+merge_command(RemoteCommand = #esync_command{cvs = RemoteCvs, timestamp = RemoteTimestamp}, LocalCvs, LocalTime) ->
+    OtherCvsBitSize = ?CVS_BIT_SIZE-1,
+    <<RemoteExistFlag:1, _:OtherCvsBitSize>> = RemoteCvs,
+    <<LocalExistFlag:1, _:OtherCvsBitSize>> = RemoteCvs,
+    if
+    %% no conflict, should not update store val
+        RemoteExistFlag == LocalExistFlag ->
+            if
+                (RemoteTimestamp > LocalTime) ->
+                    %% update data info as remote
+                    {update, no, RemoteCommand};
+                true ->
+                    %% keep data info as local
+                    {no, no, RemoteCommand}
+            end;
+        true ->
+            if
+                (RemoteTimestamp > LocalTime) ->
+                    %% update data info as remote
+                    {update, update, RemoteCommand};
+                true ->
+                    %% keep data info as local
+                    {no, no, RemoteCommand}
+            end
+    end.
+
+format_command(_Command = #edis_command{timestamp = TimeStamp, db = Db, cmd = Cmd, args = Args, group = _Group, result_type
+= _ResultType}) ->
+    case Cmd of
+        <<"SADD">> when length(Args)>1 ->
+            {[Key], Elements} = lists:split(Args, 1),
+            {ok, #esync_command{timestamp = TimeStamp, element_op = sadd, db = Db, key = Key}, Elements};
+        <<"SREM">> when length(Args)>1 ->
+            {[Key], Elements} = lists:split(Args, 1),
+            {ok, #esync_command{timestamp = TimeStamp, element_op = srem, db = Db, key = Key}, Elements};
+        <<"EXPIRE">> when length(Args)==2 ->
+            {[Key], [Expire]} = lists:split(Args, 1),
+            {ok, #esync_command{timestamp = TimeStamp, element_op = expire, db = Db, key = Key}, [Expire]};
+        _ ->
+            lager:debug("not logged command ~p", [Cmd]),
+            none
+    end.
+
+make_edis_command_by_format_command(_EsyncCommand = #esync_command{timestamp = TimeStamp, element_op = Op, db = Db, key = Key, element = Element}) ->
+    case Op of
+        sadd ->
+            Args = [Key, Element],
+            {ok, #edis_command{timestamp = TimeStamp, db = Db, cmd = <<"SADD">>, args = Args, group = sets, result_type = ok}};
+        srem ->
+            Args = [Key, Element],
+            {ok, #edis_command{timestamp = TimeStamp, db = Db, cmd = <<"SREM">>, args = Args, group = sets, result_type = ok}};
+        _ ->
+            lager:error("unkown Op ~p", [Op]),
+            none
+    end.
