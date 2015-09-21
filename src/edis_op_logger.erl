@@ -146,8 +146,9 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{
                     ElementCommand = FormatCommand#esync_command{element = Element},
                     OldCvs = get_cvs(DbClient, ElementCommand),
                     NewCvs = merge_op_to_cvs(ElementCommand, OldCvs),
-                    store_local_cvs(DbClient, ElementCommand),
-                    make_bin_log_from_format_command(ElementCommand#esync_command{cvs = NewCvs})
+                    NewElementCommand = ElementCommand#esync_command{cvs = NewCvs},
+                    store_local_cvs(DbClient, NewElementCommand),
+                    make_bin_log_from_format_command(NewElementCommand)
                 end, Elements),
             esync_log:log_command(BinLogs);
         none ->
@@ -286,6 +287,7 @@ make_sure_binay(Data) ->
 
 -define(CVS_BIT_SIZE, 16).
 -define(DEFAULT_CVS, <<0:?CVS_BIT_SIZE>>).
+-define(DEFAULT_TIME, 0).
 
 get_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}) ->
     CvsKey = iolist_to_binary(["cvs_", Key, "_", Element]),
@@ -319,9 +321,10 @@ merge_op_to_cvs(ElementCommand = #esync_command{timestamp = Timestamp, key = Key
                  end,
     NewCvs = case Op of
                  sadd -> <<1:1, OldKeptCvs:KeptCvsBitSize>>;
-                 srem -> <<1:0, OldCvs:KeptCvsBitSize>>;
+                 srem -> <<0:1, OldKeptCvs:KeptCvsBitSize>>;
                  _ -> <<1:1, OldKeptCvs:KeptCvsBitSize>>
              end,
+    lager:debug("merge op to cvs Op ~p OldCvs ~p OldKeptCvs ~p NewCvs ~p", [Op, OldCvs, OldKeptCvs, NewCvs]),
     NewCvs.
 
 get_timestamp(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}) ->
@@ -365,7 +368,7 @@ store_local_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp,
             edis_db:run_no_oplog(DbClient, CvsCommand#edis_command{args = CvsArgs}),
             edis_db:run_no_oplog(DbClient, CvsCommand#edis_command{args = TimeArgs})
         catch E:T ->
-            lager:error("get old cvs failed for Cvskey ~p ~p:~p", [CvsKey, E ,T]),
+            lager:error("store local cvs failed for Cvskey ~p ~p:~p", [CvsKey, E ,T]),
             ?DEFAULT_CVS
         end,
     OldTime.

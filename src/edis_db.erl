@@ -109,7 +109,7 @@ sync_command(Db, Command, ServerId, Index, SyncLog, Timeout) ->
 
 -spec run_no_oplog(atom(), edis:command()) -> term().
 run_no_oplog(Db, Command) ->
-    run(Db, Command, ?DEFAULT_TIMEOUT).
+    run_no_oplog(Db, Command, ?DEFAULT_TIMEOUT).
 
 %% @doc Executes Command in Db with some Timeout
 -spec run_no_oplog(atom(), edis:command(), infinity | pos_integer()) -> term().

@@ -9,7 +9,8 @@ logs/
 log/
 *~
 .hosts.erlang
-rel/edis/
+rel/edis
 .idea
 .rebar
 *.iml
+tags
