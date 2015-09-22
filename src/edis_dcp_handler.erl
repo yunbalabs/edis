@@ -28,7 +28,7 @@
 %%% API
 %%%===================================================================
 open_stream([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd]) ->
-    ServerId = get_server_id(),
+    ServerId = edis_config:get(server_id),
     edcp_consumer_sup:start([Host, Port], [VBucketUUID, SeqNoStart, SeqNoEnd], #consumer_state{
         seq_num = SeqNoStart - 1, server_id = ServerId
     }).
@@ -82,13 +82,14 @@ handle_snapshot_marker(SnapshotStart, _SnapshotEnd, ModState) ->
 
 handle_snapshot_item({SeqNo, Log}, State = #consumer_state{server_id = SId}) ->
     [ServerId, Rest1] = binary:split(Log, ?OP_LOG_SEP),
-    case ServerId of
+    BinServerId = integer_to_binary(SId),
+    case BinServerId of
         SId ->
             lager:debug("server id equal with log server id [~p], ignore [~p]", [ServerId, Log]),
             {ok, State#consumer_state{seq_num = SeqNo}};
         _ ->
-            [Index, Rest2] = binary:split(Rest1, ?OP_LOG_SEP),
-            edis_sync_log ! {sync_log, {ServerId, binary_to_integer(Index), Rest2}},
+            [_Index, Rest2] = binary:split(Rest1, ?OP_LOG_SEP),
+            edis_op_logger:sync_log(Rest2),
             {ok, State#consumer_state{seq_num = SeqNo}}
     end.
 
@@ -114,8 +115,8 @@ get_snapshots(StartNum, Len, File, SnapShot) ->
     case get_log(File) of
         file_end ->
             lists:reverse(SnapShot);
-        {ok, StartNum, Log} ->
-            get_snapshots(StartNum + 1, Len - 1, File, [{StartNum, Log} | SnapShot]);
+        {ok, Index, Log} when Index>=StartNum ->
+            get_snapshots(Index, Len - 1, File, [{StartNum, Log} | SnapShot]);
         {ok, _Index, _Data} ->
             get_snapshots(StartNum, Len, File, SnapShot)
     end.

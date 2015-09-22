@@ -112,7 +112,7 @@ enable_transaction(Transaction) when is_binary(Transaction) ->
 
 init([]) ->
     %% get server id
-    ServerId = ?DEFAULT_SERVER_ID,
+    ServerId = edis_config:get(server_id),
 
     %% set self as sync receiver & get a client to store/query VC
     esync_log:set_sync_receiver(edis_sync_log),
@@ -145,10 +145,10 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{
                 fun (Element) ->
                     ElementCommand = FormatCommand#esync_command{element = Element},
                     OldCvs = get_cvs(DbClient, ElementCommand),
-                    NewCvs = merge_op_to_cvs(ElementCommand, OldCvs),
+                    NewCvs = merge_op_to_cvs(ServerId, ElementCommand, OldCvs),
                     NewElementCommand = ElementCommand#esync_command{cvs = NewCvs},
                     store_local_cvs(DbClient, NewElementCommand),
-                    make_bin_log_from_format_command(NewElementCommand)
+                    make_bin_log_from_format_command(ServerId, NewElementCommand)
                 end, Elements),
             esync_log:log_command(BinLogs);
         none ->
@@ -187,7 +187,8 @@ handle_event({synclog, OpLog}, State = #state{
             end;
         Error ->
             lager:error("format log to command failed ~p", [Error])
-    end;
+    end,
+    {ok, State};
 handle_event({synchronize, Pid}, State) ->
     {ok, State#state{synchronize_pid = Pid}};
 
@@ -311,20 +312,21 @@ get_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = K
     lager:debug("old cvs ~p", [OldCvs]),
     OldCvs.
 
-merge_op_to_cvs(ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}, OldCvs) ->
-    KeptCvsBitSize = ?CVS_BIT_SIZE-1,
-    OldKeptCvs = case OldCvs of
-                     <<_:1, KeptCvs:KeptCvsBitSize>> ->
-                         KeptCvs;
-                     _ ->
-                         0
-                 end,
+merge_op_to_cvs(ServerId, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}, OldCvs) ->
+    KeptCvsBitSize1 = ServerId,
+    KeptCvsBitSize2 = ?CVS_BIT_SIZE - 1 - ServerId - 1,
+    {OldKeptCvs1,OldKeptCvs2}  = case OldCvs of
+                                     <<_:1, KeptCvs1:KeptCvsBitSize1, _:1, KeptCvs2:KeptCvsBitSize2>> ->
+                                         {KeptCvs1, KeptCvs2};
+                                     _ ->
+                                         {0, 0}
+                                 end,
     NewCvs = case Op of
-                 sadd -> <<1:1, OldKeptCvs:KeptCvsBitSize>>;
-                 srem -> <<0:1, OldKeptCvs:KeptCvsBitSize>>;
-                 _ -> <<1:1, OldKeptCvs:KeptCvsBitSize>>
+                 sadd -> <<1:1, OldKeptCvs1:KeptCvsBitSize1, 1:1, OldKeptCvs2:KeptCvsBitSize2>>;
+                 srem -> <<0:1, OldKeptCvs1:KeptCvsBitSize1, 0:1, OldKeptCvs2:KeptCvsBitSize2>>;
+                 _ -> <<1:1, OldKeptCvs1:KeptCvsBitSize1, 1:1, OldKeptCvs2:KeptCvsBitSize2>>
              end,
-    lager:debug("merge op to cvs Op ~p OldCvs ~p OldKeptCvs ~p NewCvs ~p", [Op, OldCvs, OldKeptCvs, NewCvs]),
+    lager:debug("merge op to cvs Op ~p OldCvs ~p NewCvs ~p", [Op, OldCvs, NewCvs]),
     NewCvs.
 
 get_timestamp(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}) ->
@@ -374,10 +376,11 @@ store_local_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp,
     OldTime.
 
 -define(SEP, <<"\\">>).
-make_bin_log_from_format_command(_CvsCommand = #esync_command{timestamp = Timestamp, element_op = Op, db = Db, key = Key, element = Element, cvs = Cvs}) ->
+make_bin_log_from_format_command(ServerId, _CvsCommand = #esync_command{timestamp = Timestamp, element_op = Op, db = Db, key = Key, element = Element, cvs = Cvs}) ->
     TruncTimestamp = trunc(Timestamp),
     iolist_to_binary([
-        make_sure_binay(TruncTimestamp)
+        make_sure_binay(ServerId)
+        , ?SEP, make_sure_binay(TruncTimestamp)
         , ?SEP, make_sure_binay(Db)
         , ?SEP, make_sure_binay(Key)
         , ?SEP, make_sure_binay(Element)
@@ -387,13 +390,12 @@ make_bin_log_from_format_command(_CvsCommand = #esync_command{timestamp = Timest
     ]).
 
 make_format_command_from_bin_log(BinOpLog) ->
-    [_BinTruncTimestamp, Bin1] = binary:split(BinOpLog, ?OP_LOG_SEP),
-    [BinDb, Bin2] = binary:split(Bin1, ?OP_LOG_SEP),
+    [BinDb, Bin2] = binary:split(BinOpLog, ?OP_LOG_SEP),
     [BinKey, Bin3] = binary:split(Bin2, ?OP_LOG_SEP),
     [BinElement, Bin4] = binary:split(Bin3, ?OP_LOG_SEP),
     [BinOp, Bin5] = binary:split(Bin4, ?OP_LOG_SEP),
     [BinCvs, Bin6] = binary:split(Bin5, ?OP_LOG_SEP),
-    [BinTimestamp, _Bin7] = binary:split(Bin6, ?OP_LOG_SEP),
+    [BinTimestamp] = binary:split(Bin6, ?OP_LOG_SEP),
 
     Timestamp = binary_to_float(BinTimestamp),
     Op = binary_to_atom(BinOp, latin1),

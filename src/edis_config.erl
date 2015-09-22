@@ -13,7 +13,7 @@
 
 -include("edis.hrl").
 
--type config_option() :: listener_port_range | client_timeout | databases | requirepass | dir | backend.
+-type config_option() :: listener_port_range | client_timeout | databases | requirepass | dir | backend | server_id.
 
 %% @doc sets configuration params
 -spec set(config_option(), term()) -> ok.
@@ -60,6 +60,8 @@ get(dir) ->
   get(dir, "./db/");
 get(backend) ->
   get(backend, {edis_eleveldb_backend, [{create_if_missing, true}]});
+get(server_id) ->
+  get(server_id, 0);
 get(Pattern) ->
   [{K, V} ||
    {K, V} <- application:get_all_env(edis),
