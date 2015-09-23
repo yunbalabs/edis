@@ -163,11 +163,13 @@ handle_event({oplog, Command = #edis_command{}}, State = #state{
     %end;
 handle_event({synclog, OpLog}, State = #state{
     server_id = ServerId, db_client = DbClient, synchronize_pid = SyncPid}) ->
+    lager:debug("handle sync log ~p", [OpLog]),
     case make_format_command_from_bin_log(OpLog) of
         {ok, RemoteCommand} ->
             LocalCvs = get_cvs(DbClient, RemoteCommand),
             LocalTime = get_timestamp(DbClient, RemoteCommand),
             {UpdateInfo, UpdateData, MergeCommand} = merge_command(RemoteCommand, LocalCvs, LocalTime),
+            lager:debug("merge result ~p", [{UpdateInfo, UpdateData, MergeCommand}]),
             case UpdateInfo of
                 update ->
                     store_local_cvs(DbClient, MergeCommand);
@@ -288,7 +290,7 @@ make_sure_binay(Data) ->
 
 -define(CVS_BIT_SIZE, 16).
 -define(DEFAULT_CVS, <<0:?CVS_BIT_SIZE>>).
--define(DEFAULT_TIME, 0).
+-define(DEFAULT_TIME, 0.0).
 
 get_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}) ->
     CvsKey = iolist_to_binary(["cvs_", Key, "_", Element]),
@@ -297,19 +299,24 @@ get_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = K
         cmd = <<"GET">>,
         db = Db,
         args = [CvsKey],
-        group = keys,
-        result_type = number,
+        group = strings,
+        result_type = bulk,
         timeout = undefined,
         expire = undefined
     },
-    OldCvs =
+    StoreCvs =
         try
             edis_db:run_no_oplog(DbClient, OldCvsCommand)
         catch E:T ->
             lager:error("get old cvs failed for CvsKey ~p ~p:~p", [CvsKey, E ,T]),
             ?DEFAULT_CVS
         end,
-    lager:debug("old cvs ~p", [OldCvs]),
+    OldCvs =
+        if
+            is_binary(StoreCvs) -> StoreCvs;
+            true -> ?DEFAULT_CVS
+        end,
+    lager:debug("storecvs ~p old cvs ~p", [StoreCvs, OldCvs]),
     OldCvs.
 
 merge_op_to_cvs(ServerId, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db}, OldCvs) ->
@@ -336,32 +343,37 @@ get_timestamp(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, k
         cmd = <<"GET">>,
         db = Db,
         args = [TimeKey],
-        group = keys,
-        result_type = number,
+        group = strings,
+        result_type = bulk,
         timeout = undefined,
         expire = undefined
     },
-    OldTime =
+    StoreTime =
         try
             edis_db:run_no_oplog(DbClient, OldCvsCommand)
         catch E:T ->
             lager:error("get old cvs failed for TimeKey ~p ~p:~p", [TimeKey, E ,T]),
             ?DEFAULT_CVS
         end,
+    OldTime = if
+                  is_binary(StoreTime) -> binary_to_float(StoreTime);
+                  true -> ?DEFAULT_TIME
+              end,
+    lager:debug("get old timestamp store time ~p oldtime ~p", [StoreTime, OldTime]),
     OldTime.
 
 store_local_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp, key = Key, element = Element, element_op = Op, db = Db, cvs = Cvs}) ->
     CvsKey = iolist_to_binary(["cvs_", Key, "_", Element]),
-    CvsArgs =  [CvsKey, Cvs],
+    CvsArgs =  [CvsKey, make_sure_binay(Cvs)],
     TimeKey = iolist_to_binary(["time_", Key, "_", Element]),
-    TimeArgs = [TimeKey, Timestamp],
+    TimeArgs = [TimeKey, make_sure_binay(Timestamp)],
     CvsCommand = #edis_command{
         timestamp = Timestamp,
         cmd = <<"SET">>,
         db = Db,
         args = CvsArgs,
-        group = keys,
-        result_type = number,
+        group = strings,
+        result_type = ok,
         timeout = undefined,
         expire = undefined
     },
@@ -376,12 +388,9 @@ store_local_cvs(DbClient, ElementCommand = #esync_command{timestamp = Timestamp,
     OldTime.
 
 -define(SEP, <<"\\">>).
-make_bin_log_from_format_command(ServerId, _CvsCommand = #esync_command{timestamp = Timestamp, element_op = Op, db = Db, key = Key, element = Element, cvs = Cvs}) ->
-    TruncTimestamp = trunc(Timestamp),
+make_bin_log_from_format_command(_ServerId, _CvsCommand = #esync_command{timestamp = Timestamp, element_op = Op, db = Db, key = Key, element = Element, cvs = Cvs}) ->
     iolist_to_binary([
-        make_sure_binay(ServerId)
-        , ?SEP, make_sure_binay(TruncTimestamp)
-        , ?SEP, make_sure_binay(Db)
+        make_sure_binay(Db)
         , ?SEP, make_sure_binay(Key)
         , ?SEP, make_sure_binay(Element)
         , ?SEP, make_sure_binay(Op)
@@ -400,15 +409,16 @@ make_format_command_from_bin_log(BinOpLog) ->
     Timestamp = binary_to_float(BinTimestamp),
     Op = binary_to_atom(BinOp, latin1),
     Db = binary_to_integer(BinDb),
-    Key = binary_to_list(BinKey),
+    Key = BinKey,
     Element = BinElement,
     Cvs = BinCvs,
     {ok, #esync_command{timestamp = Timestamp, element_op = Op, db = Db, key = Key, element = Element, cvs = Cvs}}.
 
 merge_command(RemoteCommand = #esync_command{cvs = RemoteCvs, timestamp = RemoteTimestamp}, LocalCvs, LocalTime) ->
+    lager:debug("merge command ~p with cvs ~p time ~p", [RemoteCommand, LocalCvs, LocalTime]),
     OtherCvsBitSize = ?CVS_BIT_SIZE-1,
     <<RemoteExistFlag:1, _:OtherCvsBitSize>> = RemoteCvs,
-    <<LocalExistFlag:1, _:OtherCvsBitSize>> = RemoteCvs,
+    <<LocalExistFlag:1, _:OtherCvsBitSize>> = LocalCvs,
     if
     %% no conflict, should not update store val
         RemoteExistFlag == LocalExistFlag ->
@@ -452,10 +462,10 @@ make_edis_command_by_format_command(_EsyncCommand = #esync_command{timestamp = T
     case Op of
         sadd ->
             Args = [Key, Element],
-            {ok, #edis_command{timestamp = TimeStamp, db = Db, cmd = <<"SADD">>, args = Args, group = sets, result_type = ok}};
+            {ok, #edis_command{timestamp = TimeStamp, db = Db, cmd = <<"SADD">>, args = Args, group = sets, result_type = number}};
         srem ->
             Args = [Key, Element],
-            {ok, #edis_command{timestamp = TimeStamp, db = Db, cmd = <<"SREM">>, args = Args, group = sets, result_type = ok}};
+            {ok, #edis_command{timestamp = TimeStamp, db = Db, cmd = <<"SREM">>, args = Args, group = sets, result_type = number}};
         _ ->
             lager:error("unkown Op ~p", [Op]),
             none

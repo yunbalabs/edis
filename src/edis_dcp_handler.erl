@@ -83,8 +83,9 @@ handle_snapshot_marker(SnapshotStart, _SnapshotEnd, ModState) ->
 handle_snapshot_item({SeqNo, Log}, State = #consumer_state{server_id = SId}) ->
     [ServerId, Rest1] = binary:split(Log, ?OP_LOG_SEP),
     BinServerId = integer_to_binary(SId),
-    case BinServerId of
-        SId ->
+    lager:debug("handle log ~p ~p from server_id ~p", [SeqNo, Log, ServerId]),
+    case ServerId of
+        BinServerId ->
             lager:debug("server id equal with log server id [~p], ignore [~p]", [ServerId, Log]),
             {ok, State#consumer_state{seq_num = SeqNo}};
         _ ->
@@ -115,7 +116,7 @@ get_snapshots(StartNum, Len, File, SnapShot) ->
     case get_log(File) of
         file_end ->
             lists:reverse(SnapShot);
-        {ok, Index, Log} when Index>=StartNum ->
+        {ok, Index, Log} when Index >= StartNum ->
             get_snapshots(Index, Len - 1, File, [{StartNum, Log} | SnapShot]);
         {ok, _Index, _Data} ->
             get_snapshots(StartNum, Len, File, SnapShot)
