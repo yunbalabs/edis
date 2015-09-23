@@ -115,7 +115,7 @@ init([]) ->
     ServerId = edis_config:get(server_id),
 
     %% set self as sync receiver & get a client to store/query VC
-    esync_log:set_sync_receiver(edis_sync_log),
+    esync_log:set_sync_receiver(edis_op_logger),
     DbClient = edis_db:process(0),
 
     FilterTables = sets:new(),
